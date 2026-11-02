@@ -186,7 +186,17 @@ function finish() {
     () => run('git', ['merge', '--ff-only', branch], mainRoot),
     'main moved on; run finish again.',
   )
-  pushStep('push main', ['push', 'origin', 'main'], mainRoot, 'main is merged locally; push it by hand.')
+  // If the branch was pushed (e.g. to run CI), one atomic push moves main and
+  // deletes the branch's origin copy, as wrap does.
+  const remote = hasOrigin && refExists(`refs/remotes/origin/${branch}`)
+  pushStep(
+    remote ? `push main and delete ${branch} on origin` : 'push main',
+    ['push', '--atomic', 'origin', 'main', ...(remote ? [`:${branch}`] : [])],
+    mainRoot,
+    remote
+      ? `main is merged locally; push it by hand, then \`git push origin --delete ${branch}\` if origin still has it.`
+      : 'main is merged locally; push it by hand.',
+  )
   step(
     'remove the worktree',
     () => run('git', ['worktree', 'remove', root], mainRoot),
