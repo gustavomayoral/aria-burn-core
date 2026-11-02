@@ -23,6 +23,8 @@ import { JobModel, LaserMode } from './job.ts'
 import { MachineProfile } from './machine.ts'
 
 export const STATUS_PUSH_HZ = 20
+/** Upper bound on job.progress events per second while a network job streams. */
+export const JOB_PROGRESS_HZ = 10
 
 const JobId = UInt32('Job id assigned by Rust, unique for the app session')
 
@@ -87,6 +89,52 @@ export const PlanDoneEvent = named(
   ),
 )
 
+// Network (live) jobs, COD-264. Event order for a job streamed over the emulator:
+//   job.streaming → plan.started → sample batches, with job.progress at most
+//   JOB_PROGRESS_HZ (interleaved with machine.status) → job.loaded → plan.done.
+// A stream that ends early (sender disconnect, soft reset) still sends job.loaded
+// and plan.done for what was planned, plus an error event if it was aborted.
+// File jobs are unchanged: job.loaded, then plan.start → plan.started → batches → plan.done.
+// What the core derives from these (live tiling, scrub cutoff, job stats) is in live.ts.
+
+export const JobStreamingEvent = named(
+  'JobStreamingEvent',
+  Type.Object(
+    {
+      type: Type.Literal('job.streaming'),
+      jobId: JobId,
+      name: Type.String({ description: 'Sender-supplied job name, or a generated one; becomes JobSource.name' }),
+    },
+    {
+      description:
+        'A network job started streaming. Its samples arrive live; job.loaded and plan.done only come when the stream ends.',
+      additionalProperties: false,
+    },
+  ),
+)
+
+export const JobProgressEvent = named(
+  'JobProgressEvent',
+  Type.Object(
+    {
+      type: Type.Literal('job.progress'),
+      jobId: JobId,
+      plannedS: NonNegative(
+        'Job clock up to which motion has been planned and its samples sent (s), beam-off moves included; the live scrub head',
+      ),
+      lineCount: UInt32('Source lines received so far'),
+      batchCount: UInt32('Batches sent so far'),
+      sampleCount: UInt32('Samples sent so far'),
+      energyJ: NonNegative('Σ powerW × dtS over the samples sent so far (J, optical, before absorption)'),
+    },
+    {
+      description:
+        'Running totals of a streaming network job, same meanings as plan.done. Sent after the batches it counts, so batchCount never runs ahead of the sample channel.',
+      additionalProperties: false,
+    },
+  ),
+)
+
 export const MachineStatusEvent = named(
   'MachineStatusEvent',
   Type.Object(
@@ -120,9 +168,21 @@ export const ErrorEvent = named(
 
 export const Event = named(
   'Event',
-  Type.Union([HelloEvent, JobLoadedEvent, PlanStartedEvent, PlanDoneEvent, MachineStatusEvent, ErrorEvent], {
-    description: 'Rust → webview event, tagged by `type`.',
-  }),
+  Type.Union(
+    [
+      HelloEvent,
+      JobLoadedEvent,
+      PlanStartedEvent,
+      PlanDoneEvent,
+      JobStreamingEvent,
+      JobProgressEvent,
+      MachineStatusEvent,
+      ErrorEvent,
+    ],
+    {
+      description: 'Rust → webview event, tagged by `type`.',
+    },
+  ),
 )
 export type Event = Static<typeof Event>
 

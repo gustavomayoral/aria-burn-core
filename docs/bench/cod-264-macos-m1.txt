@@ -1,0 +1,53 @@
+COD-264 pipeline benchmark — `pnpm bench`, run 2026-11-02 on this Mac in the
+Claude desktop app's Chromium (ANGLE/Metal), NOT the Tauri WKWebView and NOT
+Windows/Iris Xe. Re-run in the aria-burn webview on both platforms before
+calling the COD-251/252 criteria met everywhere.
+
+== Environment ==
+user agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/4.4212.0 Chrome/152.0.7977.167 Safari/537.36
+gl renderer: ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)
+gl vendor: Google Inc. (Apple)
+MAX_TEXTURE_SIZE 16384 · EXT_float_blend true · timer query true
+timing: wall clock (performance.now), single sync per pass (finish + readPixels) unless "stage-synced"
+
+== Spike-equivalent job: 100 × 100 mm raster, 0.1 mm interval, σ 0.05 mm, 6000 mm/min, M4 S300, birch ==
+samples 5,905,951 in 361 batches · job 1121.2 s
+grid 6010 × 6020 @ 16.67 µm · tiles 1 · kernel radius 10 cells
+interim sampler 1147.0 ms · sample store 473.4 ms (CPU, once per job)
+sample upload 56.9 ms (once per job)
+full-res: cold 132.9 ms · warm ×10 min 91.7 ms / median 93.1 ms / max 125.6 ms → < 2 s PASS
+  stage-synced: deposit 37.3 ms · blurH 28.1 ms · blurV 25.1 ms · response 15.1 ms
+coarse scrub: first after full-res 43.6 ms · warm ×10 at moving cutoffs min 2.7 ms / median 3.5 ms / max 4.5 ms → < 50 ms PASS
+  stage-synced: deposit 4.6 ms · blurH 1.7 ms · blurV 1.0 ms · response 0.8 ms
+
+== Fluence conservation (GPU, Σ cell · pitch² over tile cores) ==
+  full-res expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4555e+3 (1.0000) PASS
+  coarse expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4553e+3 (0.9999) PASS
+  coarse / full-res after blur V: 0.9999 → PASS
+
+== GPU vs CPU reference, tiled vs untiled (provisional 10 W diode, σ 0.03 × 0.015 mm, birch) ==
+grid 1440 × 1440 · tiled plan 3 × 3 tiles of ≤ 700² (margin 20)
+  GPU untiled vs CPU:    max |Δfluence| 1.08e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU tiled vs CPU:      max |Δfluence| 1.08e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU tiled vs untiled:  max |Δfluence| 0.00e+0 of peak · max Δcolour 0 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  CPU-deposit fallback (no EXT_float_blend) tiled vs CPU: max |Δfluence| 3.01e-7 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  energy after blur V: CPU 1.45693e+1 · GPU tiled 1.45693e+1
+
+== Provisional-pitch job: 100 × 100 mm raster on the provisional 10 W diode (σ 0.03 × 0.015 mm → 5 µm pitch) ==
+samples 19,688,836 · sampler 965.9 ms · store 496.8 ms
+grid 20012 × 20040 · tiles 3 × 3 (padded ≤ 6711²)
+full-res tiled: first 4008.0 ms (includes uploading and binning the samples, allocating targets) · second 1261.3 ms
+  stage-synced: deposit 173.2 ms · blurH 325.5 ms · blurV 482.8 ms · response 144.9 ms
+  full-res tiled expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4555e+3 (1.0000) PASS
+coarse scrub: first (builds checkpoints) 110.1 ms · warm ×10 at moving cutoffs min 2.6 ms / median 14.4 ms / max 24.0 ms
+  stage-synced: deposit 9.2 ms · blurH 2.2 ms · blurV 0.8 ms · response 0.9 ms
+gl error: 0

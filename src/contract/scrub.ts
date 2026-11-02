@@ -25,6 +25,8 @@ export type ScrubPhase = 'coarse' | 'full'
 export interface ScrubRequest {
   progress: number
   phase: ScrubPhase
+  /** Live jobs: Follow live pins the cutoff to the stream head (live.ts). Ignored for file jobs. */
+  follow?: boolean
 }
 
 export function scrubCutoffS(progress: number, durationS: number): number {

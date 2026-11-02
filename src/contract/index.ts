@@ -3,7 +3,7 @@
 //
 // Shared across the Rust ↔ webview boundary (TypeBox → JSON Schema → typify):
 //   common, job, machine, material, messages; plus the binary sample layout in samples.
-// Core-internal, plain TS, not shared: deposit, tiling, outputs, scrub.
+// Core-internal, plain TS, not shared: deposit, tiling, outputs, scrub, live.
 
 export * from './common.ts'
 export * from './job.ts'
@@ -15,4 +15,5 @@ export * from './deposit.ts'
 export * from './tiling.ts'
 export * from './outputs.ts'
 export * from './scrub.ts'
+export * from './live.ts'
 export * from './registry.ts'

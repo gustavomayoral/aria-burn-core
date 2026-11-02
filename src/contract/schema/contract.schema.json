@@ -341,6 +341,12 @@
           "$ref": "#/$defs/PlanDoneEvent"
         },
         {
+          "$ref": "#/$defs/JobStreamingEvent"
+        },
+        {
+          "$ref": "#/$defs/JobProgressEvent"
+        },
+        {
           "$ref": "#/$defs/MachineStatusEvent"
         },
         {
@@ -512,6 +518,64 @@
         }
       }
     },
+    "JobProgressEvent": {
+      "description": "Running totals of a streaming network job, same meanings as plan.done. Sent after the batches it counts, so batchCount never runs ahead of the sample channel.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "jobId",
+        "plannedS",
+        "lineCount",
+        "batchCount",
+        "sampleCount",
+        "energyJ"
+      ],
+      "properties": {
+        "type": {
+          "const": "job.progress",
+          "type": "string"
+        },
+        "jobId": {
+          "description": "Job id assigned by Rust, unique for the app session",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "plannedS": {
+          "description": "Job clock up to which motion has been planned and its samples sent (s), beam-off moves included; the live scrub head",
+          "minimum": 0,
+          "type": "number"
+        },
+        "lineCount": {
+          "description": "Source lines received so far",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "batchCount": {
+          "description": "Batches sent so far",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "sampleCount": {
+          "description": "Samples sent so far",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "energyJ": {
+          "description": "Σ powerW × dtS over the samples sent so far (J, optical, before absorption)",
+          "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
     "JobSource": {
       "additionalProperties": false,
       "type": "object",
@@ -539,6 +603,33 @@
           "maximum": 4294967295,
           "format": "uint32",
           "type": "integer"
+        }
+      }
+    },
+    "JobStreamingEvent": {
+      "description": "A network job started streaming. Its samples arrive live; job.loaded and plan.done only come when the stream ends.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "jobId",
+        "name"
+      ],
+      "properties": {
+        "type": {
+          "const": "job.streaming",
+          "type": "string"
+        },
+        "jobId": {
+          "description": "Job id assigned by Rust, unique for the app session",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Sender-supplied job name, or a generated one; becomes JobSource.name",
+          "type": "string"
         }
       }
     },

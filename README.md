@@ -10,6 +10,8 @@ It is consumed by the [aria-burn](../aria-burn) app and will later be embedded i
   - `schema/contract.schema.json` — JSON Schema bundle the Rust side generates its types from (`typify`)
   - `schema/sample-batch-layout.json` — binary sample batch layout (field order, stride, units, endianness)
   - `fixtures/` — conformance examples the Rust tests read and write back
+- `src/sim/` — the simulation pipeline (COD-264): interim sampler, sample store, deposit, blur, response kinds, verdict, tiling, scrub, live jobs, hover readout; `gl/` is the WebGL2 path, `cpu.ts` the CPU reference. See [docs/pipeline.md](docs/pipeline.md).
+- `bench/` — WebGL2 benchmark page (`pnpm bench`) for the COD-251/252 criteria
 - `src/testing/golden.ts` — golden-image harness; committed goldens in `src/testing/golden/`
 - `docs/` — design notes for the core
 
