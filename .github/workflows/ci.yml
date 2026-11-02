@@ -1,8 +1,8 @@
 name: CI
 
 on:
+  # Every branch, so an issue branch is green before it is fast-forwarded into main.
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 

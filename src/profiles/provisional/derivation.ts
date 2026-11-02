@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Raw published settings behind the provisional material thresholds (COD-266).
 // SOURCES.md has the links; this file is the machine-checkable copy so COD-254
 // can swap rows and recompute. Fluence is absorbed, matching deposit.ts.
