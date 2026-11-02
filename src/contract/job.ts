@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Job model: the G-code parser's output (COD-263).
 //
 // The parser normalises everything the planner and core should not have to

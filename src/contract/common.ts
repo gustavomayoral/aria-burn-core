@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Shared primitives for the v1 contract.
 //
 // Unit convention: every numeric field carries its unit as a name suffix

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Native ↔ webview boundary (COD-250 decisions, COD-252 IPC results).
 //
 // Ownership:

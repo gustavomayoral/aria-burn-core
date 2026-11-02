@@ -10,6 +10,7 @@ It is consumed by the [aria-burn](../aria-burn) app and will later be embedded i
   - `schema/contract.schema.json` — JSON Schema bundle the Rust side generates its types from (`typify`)
   - `schema/sample-batch-layout.json` — binary sample batch layout (field order, stride, units, endianness)
   - `fixtures/` — conformance examples the Rust tests read and write back
+- `src/testing/golden.ts` — golden-image harness; committed goldens in `src/testing/golden/`
 - `docs/` — design notes for the core
 
 ## Contract
@@ -22,6 +23,18 @@ pnpm check
 ```
 
 `pnpm check` fails if the committed schema, layout or binary fixture is stale.
+
+## Golden images
+
+Render outputs (RGBA images, or float fields stored as 16-bit grayscale PNGs) are compared with committed goldens via `compareRgbaGolden` / `compareFieldGolden`. On a mismatch the test writes `<name>.actual.png` and `<name>.diff.png` beside the golden (CI uploads them as an artifact). After an intended change, re-bless and review the PNG diff before committing:
+
+```sh
+pnpm golden:update
+```
+
+## Toolchain
+
+Node 26 (`.nvmrc`, `engines.node`) and pnpm 9.15.9 (`packageManager`). Node 26 ships no corepack, so install pnpm globally (`npm i -g pnpm@9.15.9`). CI runs `pnpm check` on macOS and Windows.
 
 ## License
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Motion samples: the planner's output (Rust, COD-255) and the deposit
 // stage's input (TS core, COD-264).
 //

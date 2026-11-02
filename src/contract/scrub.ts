@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Scrub (core-internal): timeline progress → time cutoff, coarse preview while
 // dragging, full-resolution pass on release.
 //

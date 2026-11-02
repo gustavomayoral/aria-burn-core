@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Material profile schema (COD-250 response kinds, COD-257 calibration,
 // COD-258 thermal slot). Each kind declares only the fields it uses; every
 // response parameter is a threshold or slope on fluence so calibration fits

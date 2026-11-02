@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Outputs (core-internal): colour, height and verdict images from one
 // function over the fluence grid (COD-250), plus the hover readout (COD-259).
 

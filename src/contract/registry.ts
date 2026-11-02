@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // The shared schemas, the JSON Schema bundle built from them, and runtime
 // validation. `schema/contract.schema.json` is generated from this file by
 // `pnpm contract:export`; a test fails if the committed copy drifts.

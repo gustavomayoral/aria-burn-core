@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Deposit input: sample stream → fluence grid (core-internal, plain TS).
 //
 // Rules (normative):

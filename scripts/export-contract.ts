@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Writes the generated contract artefacts the Rust side consumes:
 //   src/contract/schema/contract.schema.json   (JSON Schema bundle for typify)
 //   src/contract/schema/sample-batch-layout.json (binary layout constants)

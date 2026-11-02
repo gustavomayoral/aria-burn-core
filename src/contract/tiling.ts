@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Tiling (core-internal). Budget is cells, not millimetres or bed size
 // (COD-252: 9000² is the largest render target both platforms allocate).
 //

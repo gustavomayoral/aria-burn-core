@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Generated artefacts, computed in one place so the export script and the
 // drift test agree byte for byte.
 

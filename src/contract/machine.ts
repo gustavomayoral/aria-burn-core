@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Machine profile (COD-255, COD-256). The profile *is* the emulated GRBL `$`
 // settings, plus the laser parameters needed for absolute fluence.
 

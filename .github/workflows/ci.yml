@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      # Node 26 ships no corepack: pnpm comes from action-setup, version from packageManager.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Typecheck + tests, including the generated-artefact drift check and golden images.
+      - run: pnpm check
+      - name: Upload golden diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-diffs-${{ matrix.os }}
+          path: src/testing/golden/*.*.png
+          if-no-files-found: ignore

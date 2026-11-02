@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // v1 simulation contract (COD-260).
 //
 // Shared across the Rust ↔ webview boundary (TypeBox → JSON Schema → typify):
