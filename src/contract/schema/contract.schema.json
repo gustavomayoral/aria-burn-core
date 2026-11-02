@@ -1,0 +1,1231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aria-burn.dev/contract/v1/contract.schema.json",
+  "title": "aria-burn v1 simulation contract",
+  "description": "Generated from aria-burn-core/src/contract by `pnpm contract:export`. Do not edit.",
+  "$defs": {
+    "BleachResponse": {
+      "description": "Anodized aluminum. Depth is always zero.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "baseColor",
+        "markColor",
+        "markStartJPerMm2",
+        "markFullJPerMm2",
+        "damageThresholdJPerMm2"
+      ],
+      "properties": {
+        "kind": {
+          "const": "bleach",
+          "type": "string"
+        },
+        "baseColor": {
+          "$ref": "#/$defs/Lab"
+        },
+        "markColor": {
+          "$ref": "#/$defs/Lab"
+        },
+        "markStartJPerMm2": {
+          "description": "Fluence where marking starts; below this the cell is under-burned (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "markFullJPerMm2": {
+          "description": "Fluence of full mark (maximum bleach) (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "damageThresholdJPerMm2": {
+          "description": "Fluence where the coating is ablated to bare metal; above this the cell is over-burned (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "BoundsMm": {
+      "description": "Axis-aligned bounding box in absolute mm; min <= max.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "minXMm",
+        "minYMm",
+        "maxXMm",
+        "maxYMm"
+      ],
+      "properties": {
+        "minXMm": {
+          "description": "Minimum X (mm)",
+          "type": "number"
+        },
+        "minYMm": {
+          "description": "Minimum Y (mm)",
+          "type": "number"
+        },
+        "maxXMm": {
+          "description": "Maximum X (mm)",
+          "type": "number"
+        },
+        "maxYMm": {
+          "description": "Maximum Y (mm)",
+          "type": "number"
+        }
+      }
+    },
+    "ChannelEvent": {
+      "description": "JSON envelope on the event channel.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "seq",
+        "event"
+      ],
+      "properties": {
+        "seq": {
+          "description": "Per-channel sequence number, starts at 0, +1 per message; a gap means a dropped message",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "event": {
+          "$ref": "#/$defs/Event"
+        }
+      }
+    },
+    "CharResponse": {
+      "description": "Wood, leather, paper. Darkening happens well below removal: toneStart <= toneEnd, toneStart <= ablationThreshold.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "baseColor",
+        "charColor",
+        "toneStartJPerMm2",
+        "toneEndJPerMm2",
+        "toneGamma",
+        "ablationThresholdJPerMm2",
+        "depthMmPerJPerMm2"
+      ],
+      "properties": {
+        "kind": {
+          "const": "char",
+          "type": "string"
+        },
+        "baseColor": {
+          "$ref": "#/$defs/Lab"
+        },
+        "charColor": {
+          "$ref": "#/$defs/Lab"
+        },
+        "toneStartJPerMm2": {
+          "description": "Fluence where darkening starts; below this the cell is under-burned (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "toneEndJPerMm2": {
+          "description": "Fluence where the tone ramp reaches charColor; above this the cell is over-burned (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "toneGamma": {
+          "description": "Ramp shape between start and end; 1 = linear in fluence",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "ablationThresholdJPerMm2": {
+          "description": "Fluence where material removal starts (height map) (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "depthMmPerJPerMm2": {
+          "description": "Depth per unit fluence above the ablation threshold (mm per J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "Command": {
+      "description": "Webview → Rust command, sent as the single argument of a Tauri invoke.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "path"
+          ],
+          "properties": {
+            "type": {
+              "const": "job.open",
+              "type": "string"
+            },
+            "path": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "profile"
+          ],
+          "properties": {
+            "type": {
+              "const": "machine.setProfile",
+              "type": "string"
+            },
+            "profile": {
+              "$ref": "#/$defs/MachineProfile"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "jobId"
+          ],
+          "properties": {
+            "type": {
+              "const": "plan.start",
+              "type": "string"
+            },
+            "jobId": {
+              "description": "Job id assigned by Rust, unique for the app session",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "format": "uint32",
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "jobId"
+          ],
+          "properties": {
+            "type": {
+              "const": "plan.cancel",
+              "type": "string"
+            },
+            "jobId": {
+              "description": "Job id assigned by Rust, unique for the app session",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "format": "uint32",
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "type",
+            "enabled",
+            "port"
+          ],
+          "properties": {
+            "type": {
+              "const": "emulator.set",
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "TCP port on localhost",
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    "Diagnostic": {
+      "description": "Parser or planner diagnostic.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "severity",
+        "code",
+        "message",
+        "line"
+      ],
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": [
+            "warning",
+            "error"
+          ]
+        },
+        "code": {
+          "description": "Stable machine-readable code, e.g. \"unsupported-command\"",
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable message",
+          "type": "string"
+        },
+        "line": {
+          "description": "1-based source line; 0 when not tied to a line",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        }
+      }
+    },
+    "ErrorEvent": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "code",
+        "message",
+        "jobId"
+      ],
+      "properties": {
+        "type": {
+          "const": "error",
+          "type": "string"
+        },
+        "code": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "jobId": {
+          "anyOf": [
+            {
+              "description": "Job id assigned by Rust, unique for the app session",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "format": "uint32",
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Event": {
+      "description": "Rust → webview event, tagged by `type`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HelloEvent"
+        },
+        {
+          "$ref": "#/$defs/JobLoadedEvent"
+        },
+        {
+          "$ref": "#/$defs/PlanStartedEvent"
+        },
+        {
+          "$ref": "#/$defs/PlanDoneEvent"
+        },
+        {
+          "$ref": "#/$defs/MachineStatusEvent"
+        },
+        {
+          "$ref": "#/$defs/ErrorEvent"
+        }
+      ]
+    },
+    "FireRisk": {
+      "description": "Fire-risk verdict threshold. v1 profiles use fluence; COD-258 moves this to temperature.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "kind",
+            "thresholdJPerMm2"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fluence",
+              "type": "string"
+            },
+            "thresholdJPerMm2": {
+              "description": "Flashpoint-style fluence threshold (J/mm²)",
+              "minimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "kind",
+            "thresholdK"
+          ],
+          "properties": {
+            "kind": {
+              "const": "temperature",
+              "type": "string"
+            },
+            "thresholdK": {
+              "description": "Peak-temperature threshold (K); requires a peakTemperature thermal model (COD-258)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        }
+      ]
+    },
+    "HelloEvent": {
+      "description": "First event on a new channel. The webview refuses a different contractVersion.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "contractVersion",
+        "appVersion"
+      ],
+      "properties": {
+        "type": {
+          "const": "hello",
+          "type": "string"
+        },
+        "contractVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "appVersion": {
+          "type": "string"
+        }
+      }
+    },
+    "JobLoadedEvent": {
+      "description": "Parsed job. File jobs: sent once after parsing. Network jobs: sent when the stream ends (samples flow live before it).",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "jobId",
+        "job"
+      ],
+      "properties": {
+        "type": {
+          "const": "job.loaded",
+          "type": "string"
+        },
+        "jobId": {
+          "description": "Job id assigned by Rust, unique for the app session",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "job": {
+          "$ref": "#/$defs/JobModel"
+        }
+      }
+    },
+    "JobModel": {
+      "description": "Parser output. Coordinates absolute mm. Sent once per job in a job.loaded message.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "source",
+        "startMm",
+        "moves",
+        "passes",
+        "bounds",
+        "burnBounds",
+        "diagnostics"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "source": {
+          "$ref": "#/$defs/JobSource"
+        },
+        "startMm": {
+          "$ref": "#/$defs/Vec2Mm"
+        },
+        "moves": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Move"
+          }
+        },
+        "passes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Pass"
+          }
+        },
+        "bounds": {
+          "$ref": "#/$defs/BoundsMm"
+        },
+        "burnBounds": {
+          "description": "Bounds of beam-on moves only (null if nothing burns). Tiling and the fluence grid are sized from this, not the bed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundsMm"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          }
+        }
+      }
+    },
+    "JobSource": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "lineCount"
+      ],
+      "properties": {
+        "kind": {
+          "description": "file = opened from disk, network = streamed over the GRBL TCP emulator",
+          "type": "string",
+          "enum": [
+            "file",
+            "network"
+          ]
+        },
+        "name": {
+          "description": "File name, or sender-supplied name for network jobs",
+          "type": "string"
+        },
+        "lineCount": {
+          "description": "Number of source lines read",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        }
+      }
+    },
+    "Lab": {
+      "description": "Colour in CIELAB (D65). Calibration samples in Lab, so profiles store Lab.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "l",
+        "a",
+        "b"
+      ],
+      "properties": {
+        "l": {
+          "description": "CIELAB L* (0..100), D65 white point",
+          "minimum": 0,
+          "maximum": 100,
+          "type": "number"
+        },
+        "a": {
+          "description": "CIELAB a*",
+          "type": "number"
+        },
+        "b": {
+          "description": "CIELAB b*",
+          "type": "number"
+        }
+      }
+    },
+    "LaserMode": {
+      "description": "Spindle/laser state in effect: off (M5), m3 constant power, m4 dynamic power (scales with actual speed)",
+      "type": "string",
+      "enum": [
+        "off",
+        "m3",
+        "m4"
+      ]
+    },
+    "MachineProfile": {
+      "description": "Machine profile and emulated GRBL settings.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "name",
+        "opticalPowerW",
+        "sMax",
+        "laserMode",
+        "junctionDeviationMm",
+        "maxRateMmPerMin",
+        "accelMmPerS2",
+        "travelMm",
+        "spot",
+        "powerCurve",
+        "provenance"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "opticalPowerW": {
+          "description": "Laser optical output at full power (W). Not electrical input power.",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "sMax": {
+          "description": "$30 maximum S value",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "laserMode": {
+          "description": "$32 laser mode. When true, M4 scales power with actual speed and g0 is beam-off.",
+          "type": "boolean"
+        },
+        "junctionDeviationMm": {
+          "description": "$11 junction deviation (mm)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "maxRateMmPerMin": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "description": "$110/$111 max rate, X axis (mm/min)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "y": {
+              "description": "$110/$111 max rate, Y axis (mm/min)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        "accelMmPerS2": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "description": "$120/$121 acceleration, X axis (mm/s²)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "y": {
+              "description": "$120/$121 acceleration, Y axis (mm/s²)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        "travelMm": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "description": "$130/$131 max travel, X axis (mm)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "y": {
+              "description": "$130/$131 max travel, Y axis (mm)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        "spot": {
+          "$ref": "#/$defs/Spot"
+        },
+        "powerCurve": {
+          "minItems": 2,
+          "description": "S → optical power lookup, linear between points, sorted by s with strictly increasing s, non-decreasing power. Must start at s = 0 and end at s = 1.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PowerCurvePoint"
+          }
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        }
+      }
+    },
+    "MachineState": {
+      "description": "GRBL machine state as reported in `?` status",
+      "type": "string",
+      "enum": [
+        "Idle",
+        "Run",
+        "Hold",
+        "Jog",
+        "Alarm",
+        "Door",
+        "Check",
+        "Home",
+        "Sleep"
+      ]
+    },
+    "MachineStatusEvent": {
+      "description": "Planner-accurate status, same data Rust uses to answer `?`.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "state",
+        "positionMm",
+        "feedMmPerMin",
+        "s",
+        "laser",
+        "line",
+        "jobId",
+        "tS"
+      ],
+      "properties": {
+        "type": {
+          "const": "machine.status",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/MachineState"
+        },
+        "positionMm": {
+          "$ref": "#/$defs/Vec2Mm"
+        },
+        "feedMmPerMin": {
+          "description": "Actual feed (mm/min)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "s": {
+          "description": "Current S, raw units",
+          "minimum": 0,
+          "type": "number"
+        },
+        "laser": {
+          "$ref": "#/$defs/LaserMode"
+        },
+        "line": {
+          "description": "Source line being executed; 0 when idle",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "jobId": {
+          "anyOf": [
+            {
+              "description": "Job id assigned by Rust, unique for the app session",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "format": "uint32",
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tS": {
+          "description": "Job clock (s); 0 when no job",
+          "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "MaterialProfile": {
+      "description": "Material profile. One response kind per material.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "id",
+        "name",
+        "absorption",
+        "sigmaHeatMm",
+        "response",
+        "fireRisk",
+        "thermal",
+        "provenance"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "id": {
+          "description": "Stable slug, e.g. \"birch-ply-generic\"",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "absorption": {
+          "description": "Fraction of optical energy absorbed at 450 nm (v1: constant, no char feedback)",
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        },
+        "sigmaHeatMm": {
+          "description": "Heat-spread length added in quadrature to the spot sigma (mm)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "response": {
+          "$ref": "#/$defs/MaterialResponse"
+        },
+        "fireRisk": {
+          "$ref": "#/$defs/FireRisk"
+        },
+        "thermal": {
+          "$ref": "#/$defs/ThermalModel"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        }
+      }
+    },
+    "MaterialResponse": {
+      "description": "Response kind, tagged by `kind`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CharResponse"
+        },
+        {
+          "$ref": "#/$defs/MeltResponse"
+        },
+        {
+          "$ref": "#/$defs/BleachResponse"
+        }
+      ]
+    },
+    "MeltResponse": {
+      "description": "Dark/colored cast acrylic. A polished edge is a high-fluence neighbour of a removed cell (output-stage rule, no field).",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "baseColor",
+        "frostColor",
+        "frostStartJPerMm2",
+        "frostFullJPerMm2",
+        "removalThresholdJPerMm2",
+        "depthMmPerJPerMm2"
+      ],
+      "properties": {
+        "kind": {
+          "const": "melt",
+          "type": "string"
+        },
+        "baseColor": {
+          "$ref": "#/$defs/Lab"
+        },
+        "frostColor": {
+          "$ref": "#/$defs/Lab"
+        },
+        "frostStartJPerMm2": {
+          "description": "Fluence where frosting starts; below this the cell is under-burned (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "frostFullJPerMm2": {
+          "description": "Fluence of full frost (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "removalThresholdJPerMm2": {
+          "description": "Fluence where material removal starts; above this the cell is over-burned (J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "depthMmPerJPerMm2": {
+          "description": "Depth per unit fluence above the removal threshold (mm per J/mm²)",
+          "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "Move": {
+      "description": "One straight move. Its start is the previous move end (or JobModel.startMm for the first move). The beam is on when kind = g1, laser != off and s > 0.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "xMm",
+        "yMm",
+        "feedMmPerMin",
+        "s",
+        "laser",
+        "line"
+      ],
+      "properties": {
+        "kind": {
+          "description": "g0 rapid or g1 feed. GRBL laser mode ($32=1) keeps the beam off on g0 regardless of S.",
+          "type": "string",
+          "enum": [
+            "g0",
+            "g1"
+          ]
+        },
+        "xMm": {
+          "description": "Absolute end X (mm)",
+          "type": "number"
+        },
+        "yMm": {
+          "description": "Absolute end Y (mm)",
+          "type": "number"
+        },
+        "feedMmPerMin": {
+          "description": "Modal F in effect (mm/min). Ignored for g0, which runs at the machine max rate ($110/$111).",
+          "minimum": 0,
+          "type": "number"
+        },
+        "s": {
+          "description": "Commanded S in effect, raw units (0..$30)",
+          "minimum": 0,
+          "type": "number"
+        },
+        "laser": {
+          "$ref": "#/$defs/LaserMode"
+        },
+        "line": {
+          "description": "1-based source line this move came from",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "arc": {
+          "description": "true when this chord was flattened from a G2/G3 arc",
+          "type": "boolean"
+        }
+      }
+    },
+    "Pass": {
+      "description": "A contiguous range of moves. Passes tile JobModel.moves in order without gaps. v1 simulates all passes as one deposit (see COD-250 v1 simplifications).",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "index",
+        "firstMove",
+        "moveCount"
+      ],
+      "properties": {
+        "index": {
+          "description": "0-based pass index",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "firstMove": {
+          "description": "Index into JobModel.moves of the first move in this pass",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "moveCount": {
+          "description": "Number of consecutive moves in this pass",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "label": {
+          "description": "Layer/pass name from sender comments, if any",
+          "type": "string"
+        }
+      }
+    },
+    "PlanDoneEvent": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "jobId",
+        "durationS",
+        "batchCount",
+        "sampleCount",
+        "energyJ"
+      ],
+      "properties": {
+        "type": {
+          "const": "plan.done",
+          "type": "string"
+        },
+        "jobId": {
+          "description": "Job id assigned by Rust, unique for the app session",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "durationS": {
+          "description": "Total job time including beam-off moves (s); the scrub timeline length",
+          "minimum": 0,
+          "type": "number"
+        },
+        "batchCount": {
+          "description": "Batches sent",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "sampleCount": {
+          "description": "Samples sent",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "energyJ": {
+          "description": "Σ powerW × dtS over all samples (J, optical, before absorption); conservation check",
+          "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "PlanStartedEvent": {
+      "description": "Sample batches for jobId follow on the sample channel.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "jobId",
+        "gridPitchMm",
+        "dtMaxS"
+      ],
+      "properties": {
+        "type": {
+          "const": "plan.started",
+          "type": "string"
+        },
+        "jobId": {
+          "description": "Job id assigned by Rust, unique for the app session",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "type": "integer"
+        },
+        "gridPitchMm": {
+          "description": "Pitch the planner used for its step limit (spot ÷ 3) (mm)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "dtMaxS": {
+          "description": "SAMPLE_DT_MAX_S in effect (s)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "PowerCurvePoint": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "s",
+        "power"
+      ],
+      "properties": {
+        "s": {
+          "description": "Commanded S as a fraction of $30",
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        },
+        "power": {
+          "description": "Optical power as a fraction of opticalPowerW",
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        }
+      }
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "description": "provisional = published data (COD-266), calibrated = fitted from a photographed grid (COD-257), user = hand-entered",
+          "type": "string",
+          "enum": [
+            "provisional",
+            "calibrated",
+            "user"
+          ]
+        },
+        "notes": {
+          "description": "Free text: data sources, batch, fit notes",
+          "type": "string"
+        },
+        "fittedAt": {
+          "description": "ISO-8601 timestamp of the fit",
+          "format": "date-time",
+          "type": "string"
+        },
+        "meanDeltaE": {
+          "description": "Mean CIEDE2000 between fitted and photographed cells",
+          "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "Spot": {
+      "description": "Anisotropic diode spot as an elliptical Gaussian (COD-256).",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "sigmaXMm",
+        "sigmaYMm",
+        "angleDeg"
+      ],
+      "properties": {
+        "sigmaXMm": {
+          "description": "Gaussian sigma along the spot major axis before rotation (mm). For a 1/e² diameter d, sigma = d / 4.",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "sigmaYMm": {
+          "description": "Gaussian sigma along the spot minor axis before rotation (mm)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "angleDeg": {
+          "description": "Rotation of the spot X axis from machine +X, counter-clockwise (degrees)",
+          "minimum": -180,
+          "maximum": 180,
+          "type": "number"
+        }
+      }
+    },
+    "ThermalModel": {
+      "description": "Reserved slot for COD-258. v1 ships `none`; COD-258 fills in peakTemperature (Option B) or adds a speedCorrection variant (Option A). New variants are additive.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "kind",
+            "conductivityWPerMmK",
+            "volumetricHeatCapacityJPerMm3K",
+            "ambientK"
+          ],
+          "properties": {
+            "kind": {
+              "const": "peakTemperature",
+              "type": "string"
+            },
+            "conductivityWPerMmK": {
+              "description": "Thermal conductivity (W/(mm·K))",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "volumetricHeatCapacityJPerMm3K": {
+              "description": "Density × specific heat (J/(mm³·K))",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "ambientK": {
+              "description": "Ambient / initial temperature (K)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "absorptionAtFullChar": {
+              "description": "Absorption once fully charred (absorption feedback)",
+              "minimum": 0,
+              "maximum": 1,
+              "type": "number"
+            }
+          }
+        }
+      ]
+    },
+    "Vec2Mm": {
+      "description": "Absolute machine position in mm.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "xMm",
+        "yMm"
+      ],
+      "properties": {
+        "xMm": {
+          "description": "X (mm)",
+          "type": "number"
+        },
+        "yMm": {
+          "description": "Y (mm)",
+          "type": "number"
+        }
+      }
+    }
+  }
+}

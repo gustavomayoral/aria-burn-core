@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "id": "birch-ply-fixture",
+  "name": "Birch ply (fixture)",
+  "absorption": 0.8,
+  "sigmaHeatMm": 0.05,
+  "response": {
+    "kind": "char",
+    "baseColor": { "l": 82, "a": 4, "b": 18 },
+    "charColor": { "l": 22, "a": 6, "b": 10 },
+    "toneStartJPerMm2": 0.5,
+    "toneEndJPerMm2": 4,
+    "toneGamma": 1,
+    "ablationThresholdJPerMm2": 2,
+    "depthMmPerJPerMm2": 0.02
+  },
+  "fireRisk": { "kind": "fluence", "thresholdJPerMm2": 12 },
+  "thermal": { "kind": "none" },
+  "provenance": { "source": "provisional", "notes": "Contract fixture only. Real values come from COD-266." }
+}

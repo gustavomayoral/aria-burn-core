@@ -1,0 +1,37 @@
+{
+  "name": "aria-burn-core",
+  "version": "0.1.0",
+  "description": "TypeScript simulation core for the Laser Sim material burn model",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contract": "./src/contract/index.ts",
+    "./contract/schema/*": "./src/contract/schema/*",
+    "./contract/fixtures/*": "./src/contract/fixtures/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm test",
+    "contract:export": "tsx scripts/export-contract.ts",
+    "wt:start": "node scripts/worktree.mjs start",
+    "wt:finish": "node scripts/worktree.mjs finish",
+    "wt:list": "node scripts/worktree.mjs list",
+    "mainline": "node scripts/worktree.mjs mainline",
+    "wrap": "node scripts/worktree.mjs wrap"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "ajv": "^8",
+    "ajv-formats": "^3",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}

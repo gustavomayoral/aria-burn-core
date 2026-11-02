@@ -1,0 +1,14 @@
+{
+  "seq": 42,
+  "event": {
+    "type": "machine.status",
+    "state": "Run",
+    "positionMm": { "xMm": 14.25, "yMm": 10 },
+    "feedMmPerMin": 1187.5,
+    "s": 792,
+    "laser": "m4",
+    "line": 6,
+    "jobId": 3,
+    "tS": 1.875
+  }
+}

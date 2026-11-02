@@ -7,7 +7,21 @@ It is consumed by the [aria-burn](../aria-burn) app and will later be embedded i
 ## Layout
 
 - `src/contract/` — the v1 simulation contract (interfaces and types, COD-260)
+  - `schema/contract.schema.json` — JSON Schema bundle the Rust side generates its types from (`typify`)
+  - `schema/sample-batch-layout.json` — binary sample batch layout (field order, stride, units, endianness)
+  - `fixtures/` — conformance examples the Rust tests read and write back
 - `docs/` — design notes for the core
+
+## Contract
+
+Types that cross the Rust ↔ webview boundary are defined once with TypeBox in `src/contract/`. After changing them, regenerate and commit the artefacts:
+
+```sh
+pnpm contract:export
+pnpm check
+```
+
+`pnpm check` fails if the committed schema, layout or binary fixture is stale.
 
 ## License
 

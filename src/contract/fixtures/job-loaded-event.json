@@ -1,0 +1,19 @@
+{
+  "seq": 1,
+  "event": {
+    "type": "job.loaded",
+    "jobId": 3,
+    "job": {
+      "contractVersion": 1,
+      "source": { "kind": "network", "name": "LightBurn stream", "lineCount": 2 },
+      "startMm": { "xMm": 0, "yMm": 0 },
+      "moves": [
+        { "kind": "g1", "xMm": 5, "yMm": 0, "feedMmPerMin": 600, "s": 500, "laser": "m3", "line": 2 }
+      ],
+      "passes": [{ "index": 0, "firstMove": 0, "moveCount": 1 }],
+      "bounds": { "minXMm": 0, "minYMm": 0, "maxXMm": 5, "maxYMm": 0 },
+      "burnBounds": { "minXMm": 0, "minYMm": 0, "maxXMm": 5, "maxYMm": 0 },
+      "diagnostics": []
+    }
+  }
+}

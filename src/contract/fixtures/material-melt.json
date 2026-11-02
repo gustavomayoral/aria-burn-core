@@ -1,0 +1,19 @@
+{
+  "contractVersion": 1,
+  "id": "black-cast-acrylic-fixture",
+  "name": "Black cast acrylic (fixture)",
+  "absorption": 0.9,
+  "sigmaHeatMm": 0.03,
+  "response": {
+    "kind": "melt",
+    "baseColor": { "l": 10, "a": 0, "b": 0 },
+    "frostColor": { "l": 45, "a": 0, "b": -2 },
+    "frostStartJPerMm2": 0.8,
+    "frostFullJPerMm2": 2.5,
+    "removalThresholdJPerMm2": 3,
+    "depthMmPerJPerMm2": 0.05
+  },
+  "fireRisk": { "kind": "fluence", "thresholdJPerMm2": 20 },
+  "thermal": { "kind": "none" },
+  "provenance": { "source": "provisional", "notes": "Contract fixture only. Real values come from COD-266." }
+}

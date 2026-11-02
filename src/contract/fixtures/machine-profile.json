@@ -1,0 +1,22 @@
+{
+  "contractVersion": 1,
+  "name": "Generic 5 W diode (placeholder)",
+  "opticalPowerW": 5,
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": { "x": 6000, "y": 6000 },
+  "accelMmPerS2": { "x": 1000, "y": 1000 },
+  "travelMm": { "x": 400, "y": 400 },
+  "spot": { "sigmaXMm": 0.0375, "sigmaYMm": 0.02, "angleDeg": 90 },
+  "powerCurve": [
+    { "s": 0, "power": 0 },
+    { "s": 0.05, "power": 0 },
+    { "s": 0.2, "power": 0.15 },
+    { "s": 1, "power": 1 }
+  ],
+  "provenance": {
+    "source": "provisional",
+    "notes": "Contract fixture only. Real defaults come from COD-266."
+  }
+}

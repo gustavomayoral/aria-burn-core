@@ -1,0 +1,9 @@
+{
+  "header": { "sequence": 0, "t0S": 1.5, "jobId": 3, "last": true },
+  "samples": [
+    { "tRelS": 0.000244140625, "xMm": 10.0078125, "yMm": 10, "dtS": 0.00048828125, "speedMmPerS": 16, "powerW": 3.5, "line": 6 },
+    { "tRelS": 0.000732421875, "xMm": 10.015625, "yMm": 10, "dtS": 0.00048828125, "speedMmPerS": 18, "powerW": 3.75, "line": 6 },
+    { "tRelS": 0.001220703125, "xMm": 10.0234375, "yMm": 10, "dtS": 0.00048828125, "speedMmPerS": 20, "powerW": 4, "line": 6 },
+    { "tRelS": 0.001708984375, "xMm": 10.03125, "yMm": 10, "dtS": 0.00048828125, "speedMmPerS": 20, "powerW": 4, "line": 7 }
+  ]
+}

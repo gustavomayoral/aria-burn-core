@@ -1,0 +1,4 @@
+{
+  "seq": 7,
+  "event": { "type": "plan.done", "jobId": 3, "durationS": 3.5, "batchCount": 1, "sampleCount": 4, "energyJ": 0.0072 }
+}

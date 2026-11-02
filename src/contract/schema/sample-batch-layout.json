@@ -1,0 +1,110 @@
+{
+  "endianness": "little",
+  "magic": 827540033,
+  "layoutVersion": 1,
+  "headerBytes": 32,
+  "header": [
+    {
+      "name": "magic",
+      "offset": 0,
+      "type": "u32",
+      "description": "SAMPLE_BATCH_MAGIC"
+    },
+    {
+      "name": "layoutVersion",
+      "offset": 4,
+      "type": "u16",
+      "description": "SAMPLE_BATCH_LAYOUT_VERSION"
+    },
+    {
+      "name": "strideBytes",
+      "offset": 6,
+      "type": "u16",
+      "description": "Bytes per sample (SAMPLE_STRIDE_BYTES)"
+    },
+    {
+      "name": "sampleCount",
+      "offset": 8,
+      "type": "u32",
+      "description": "Samples in this batch (<= SAMPLE_BATCH_MAX_SAMPLES)"
+    },
+    {
+      "name": "sequence",
+      "offset": 12,
+      "type": "u32",
+      "description": "0-based batch index within the job, contiguous"
+    },
+    {
+      "name": "t0S",
+      "offset": 16,
+      "type": "f64",
+      "description": "Batch time origin, seconds since job start"
+    },
+    {
+      "name": "jobId",
+      "offset": 24,
+      "type": "u32",
+      "description": "Job this batch belongs to (job.loaded jobId)"
+    },
+    {
+      "name": "flags",
+      "offset": 28,
+      "type": "u32",
+      "description": "Bit 0: last batch of the job. Other bits reserved, 0."
+    }
+  ],
+  "strideBytes": 28,
+  "fields": [
+    {
+      "name": "tRelS",
+      "type": "f32",
+      "unit": "s",
+      "description": "Sample time (interval midpoint) minus t0S"
+    },
+    {
+      "name": "xMm",
+      "type": "f32",
+      "unit": "mm",
+      "description": "Absolute X at the sample"
+    },
+    {
+      "name": "yMm",
+      "type": "f32",
+      "unit": "mm",
+      "description": "Absolute Y at the sample"
+    },
+    {
+      "name": "dtS",
+      "type": "f32",
+      "unit": "s",
+      "description": "Interval duration this sample stands for (energy weight)"
+    },
+    {
+      "name": "speedMmPerS",
+      "type": "f32",
+      "unit": "mm/s",
+      "description": "Actual planner speed at the sample"
+    },
+    {
+      "name": "powerW",
+      "type": "f32",
+      "unit": "W",
+      "description": "Actual optical power: after M4 scaling and the S → power curve"
+    },
+    {
+      "name": "line",
+      "type": "u32",
+      "unit": "",
+      "description": "1-based source line of the move being executed"
+    }
+  ],
+  "maxSamples": 16384,
+  "flags": {
+    "last": 1
+  },
+  "sampling": {
+    "dtMaxS": 0.0005,
+    "stepMax": "gridPitchMm",
+    "point": "interval-midpoint"
+  }
+}
