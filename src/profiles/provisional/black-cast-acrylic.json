@@ -1,0 +1,19 @@
+{
+  "contractVersion": 1,
+  "id": "black-cast-acrylic-provisional",
+  "name": "Black cast acrylic (provisional)",
+  "absorption": 0.92,
+  "sigmaHeatMm": 0.011,
+  "response": {
+    "kind": "melt",
+    "baseColor": { "l": 8, "a": 0, "b": 0 },
+    "frostColor": { "l": 50, "a": 0, "b": -1 },
+    "frostStartJPerMm2": 0.1,
+    "frostFullJPerMm2": 0.29,
+    "removalThresholdJPerMm2": 1.9,
+    "depthMmPerJPerMm2": 0.3
+  },
+  "fireRisk": { "kind": "fluence", "thresholdJPerMm2": 25 },
+  "thermal": { "kind": "none" },
+  "provenance": { "source": "provisional", "notes": "PROVISIONAL - not validated against real burns (COD-266). Derived from published settings and datasheets; COD-254 replaces these. Sources and derivation: src/profiles/provisional/SOURCES.md" }
+}

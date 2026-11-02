@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "id": "birch-ply-provisional",
+  "name": "Birch / basswood plywood (provisional)",
+  "absorption": 0.6,
+  "sigmaHeatMm": 0.013,
+  "response": {
+    "kind": "char",
+    "baseColor": { "l": 81, "a": 7, "b": 20 },
+    "charColor": { "l": 28, "a": 6, "b": 10 },
+    "toneStartJPerMm2": 0.14,
+    "toneEndJPerMm2": 1.8,
+    "toneGamma": 0.4,
+    "ablationThresholdJPerMm2": 0.43,
+    "depthMmPerJPerMm2": 0.17
+  },
+  "fireRisk": { "kind": "fluence", "thresholdJPerMm2": 12 },
+  "thermal": { "kind": "none" },
+  "provenance": { "source": "provisional", "notes": "PROVISIONAL - not validated against real burns (COD-266). Derived from published settings and datasheets; COD-254 replaces these. Sources and derivation: src/profiles/provisional/SOURCES.md" }
+}

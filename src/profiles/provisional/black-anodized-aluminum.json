@@ -1,0 +1,18 @@
+{
+  "contractVersion": 1,
+  "id": "black-anodized-aluminum-provisional",
+  "name": "Black anodized aluminum (provisional)",
+  "absorption": 0.88,
+  "sigmaHeatMm": 0.02,
+  "response": {
+    "kind": "bleach",
+    "baseColor": { "l": 20, "a": 0, "b": 0 },
+    "markColor": { "l": 82, "a": 0, "b": 2 },
+    "markStartJPerMm2": 0.44,
+    "markFullJPerMm2": 2.95,
+    "damageThresholdJPerMm2": 6.7
+  },
+  "fireRisk": { "kind": "none" },
+  "thermal": { "kind": "none" },
+  "provenance": { "source": "provisional", "notes": "PROVISIONAL - not validated against real burns (COD-266). Derived from published settings and datasheets; COD-254 replaces these. Sources and derivation: src/profiles/provisional/SOURCES.md" }
+}

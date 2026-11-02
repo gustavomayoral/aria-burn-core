@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "name": "Generic 10 W diode, Sculpfun S30 Pro class (provisional)",
+  "opticalPowerW": 10,
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": { "x": 10000, "y": 10000 },
+  "accelMmPerS2": { "x": 1000, "y": 1000 },
+  "travelMm": { "x": 410, "y": 400 },
+  "spot": { "sigmaXMm": 0.03, "sigmaYMm": 0.015, "angleDeg": 90 },
+  "powerCurve": [
+    { "s": 0, "power": 0 },
+    { "s": 0.05, "power": 0 },
+    { "s": 0.1, "power": 0.04 },
+    { "s": 0.2, "power": 0.14 },
+    { "s": 1, "power": 1 }
+  ],
+  "provenance": { "source": "provisional", "notes": "PROVISIONAL - not validated against real burns (COD-266). Derived from published settings and datasheets; COD-254 replaces these. Sources and derivation: src/profiles/provisional/SOURCES.md" }
+}

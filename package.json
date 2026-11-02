@@ -10,7 +10,8 @@
     ".": "./src/index.ts",
     "./contract": "./src/contract/index.ts",
     "./contract/schema/*": "./src/contract/schema/*",
-    "./contract/fixtures/*": "./src/contract/fixtures/*"
+    "./contract/fixtures/*": "./src/contract/fixtures/*",
+    "./profiles/provisional/*": "./src/profiles/provisional/*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
