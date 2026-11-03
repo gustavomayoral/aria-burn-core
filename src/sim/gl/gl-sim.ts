@@ -436,6 +436,8 @@ export class GlSim {
   releaseTargets(): void {
     for (const t of this.pools.values()) t.dispose()
     this.pools.clear()
+    // sync() reads back from the last run's target, which was just deleted.
+    this.lastFbo = null
     this.dropCheckpoints()
     this.dropThermal()
     this.thermalStep?.release()

@@ -1,0 +1,73 @@
+BURN-33 live-job benchmark — `pnpm bench`, button "Live job (BURN-33)" (window.__runLive()), run 2026-11-03
+on this Mac in the Claude desktop app's Chromium (ANGLE/Metal, Apple M1), with the browser
+pane hidden (background page). NOT the Tauri WKWebView and NOT Windows/Iris Xe.
+
+What one refresh is: the app's live refresh (aria-burn src/lib/burn.svelte.ts scheduleLive → tick).
+New batches arrive, the setup is rebuilt on live tiling, then a coarse run at the live head.
+For a thermal material the coarse run reruns the whole thermal step, because the store changed.
+The app waits max(100 ms, 2 × last refresh) before the next one. The job is fed in 10 equal chunks.
+
+user agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/4.16336.0 Chrome/152.0.7977.167 Safari/537.36
+gl renderer: ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |    589,824 |     1 |   0.1 ms |  676.0 ms |  12.9 ms | 689.0 ms | 1378.0 ms
+    20 % |  1,179,648 |     1 |   0.2 ms | 1967.0 ms |  17.6 ms | 1984.8 ms | 3969.6 ms
+    30 % |  1,769,472 |     1 |   0.1 ms | 1751.0 ms |  17.0 ms | 1768.1 ms | 3536.2 ms
+    40 % |  2,359,296 |     1 |   0.1 ms | 1976.6 ms |  18.2 ms | 1994.9 ms | 3989.8 ms
+    50 % |  2,965,504 |     1 |   0.0 ms | 2192.7 ms |  25.6 ms | 2218.3 ms | 4436.6 ms
+    60 % |  3,555,328 |     1 |   0.1 ms | 2192.3 ms |  26.2 ms | 2218.6 ms | 4437.2 ms
+    70 % |  4,145,152 |     1 |   0.1 ms | 2295.1 ms |  33.4 ms | 2328.6 ms | 4657.2 ms
+    80 % |  4,734,976 |     1 |   0.2 ms | 2142.4 ms |  30.1 ms | 2172.7 ms | 4345.4 ms
+    90 % |  5,324,800 |     1 |   0.0 ms | 2515.5 ms |  33.7 ms | 2549.2 ms | 5098.4 ms
+   100 % |  5,905,951 |     1 |   0.1 ms | 2879.9 ms |  38.7 ms | 2918.7 ms | 5837.4 ms
+refresh: min 689.0 ms / median 2218.3 ms / max 2918.7 ms · last 2918.7 ms → the app's next refresh waits 5837.4 ms
+
+== spike job, fluence only (no thermal step) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |    589,824 |     1 |   0.3 ms |    1.6 ms |  29.3 ms |  31.2 ms | 100.0 ms
+    20 % |  1,179,648 |     1 |   0.2 ms |    3.6 ms |  22.5 ms |  26.3 ms | 100.0 ms
+    30 % |  1,769,472 |     1 |   0.1 ms |    6.6 ms |  24.5 ms |  31.2 ms | 100.0 ms
+    40 % |  2,359,296 |     1 |   0.1 ms |    2.6 ms |  32.8 ms |  35.5 ms | 100.0 ms
+    50 % |  2,965,504 |     1 |   0.1 ms |    2.3 ms |  27.8 ms |  30.2 ms | 100.0 ms
+    60 % |  3,555,328 |     1 |   0.1 ms |    2.5 ms |  30.5 ms |  33.1 ms | 100.0 ms
+    70 % |  4,145,152 |     1 |   0.1 ms |    1.4 ms |  25.1 ms |  26.6 ms | 100.0 ms
+    80 % |  4,734,976 |     1 |   0.0 ms |    1.4 ms |  24.7 ms |  26.1 ms | 100.0 ms
+    90 % |  5,324,800 |     1 |   0.1 ms |    1.4 ms |  26.2 ms |  27.7 ms | 100.0 ms
+   100 % |  5,905,951 |     1 |   0.0 ms |    1.1 ms |  28.2 ms |  29.3 ms | 100.0 ms
+refresh: min 26.1 ms / median 30.2 ms / max 35.5 ms · last 29.3 ms → the app's next refresh waits 100.0 ms
+
+== provisional diode, 5 µm pitch, 100 × 100 mm raster, birch (thermal) ==
+batches 1202 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |  1,966,080 |     3 |   0.1 ms |  761.4 ms |  18.6 ms | 780.1 ms | 1560.2 ms
+    20 % |  3,932,160 |     3 |   0.0 ms |  825.5 ms |  27.3 ms | 852.8 ms | 1705.6 ms
+    30 % |  5,914,624 |     3 |   0.1 ms |  914.3 ms |  34.6 ms | 949.0 ms | 1898.0 ms
+    40 % |  7,880,704 |     6 |   0.0 ms | 1087.0 ms |  47.8 ms | 1134.8 ms | 2269.6 ms
+    50 % |  9,846,784 |     6 |   0.0 ms | 1263.5 ms |  53.9 ms | 1317.4 ms | 2634.8 ms
+    60 % | 11,812,864 |     6 |   0.0 ms | 1317.1 ms |  63.3 ms | 1380.4 ms | 2760.8 ms
+    70 % | 13,778,944 |     6 |   0.0 ms | 1579.2 ms |  73.0 ms | 1652.2 ms | 3304.4 ms
+    80 % | 15,761,408 |     9 |   0.0 ms | 1704.3 ms |  78.6 ms | 1782.9 ms | 3565.8 ms
+    90 % | 17,727,488 |     9 |   0.1 ms | 1823.3 ms |  80.3 ms | 1903.7 ms | 3807.4 ms
+   100 % | 19,688,836 |     9 |   0.0 ms | 1975.0 ms |  88.5 ms | 2063.5 ms | 4127.0 ms
+refresh: min 780.1 ms / median 1380.4 ms / max 2063.5 ms · last 2063.5 ms → the app's next refresh waits 4127.0 ms
+gl error: 0
+
+Reading it:
+- The thermal step is almost the whole refresh. Without it a refresh is ~30 ms and the app
+  refreshes at its 100 ms floor. With it, a refresh grows with the streamed job to ~2–3 s, so
+  the view updates only every ~4–6 s by the end of a 100 mm job, on an M1.
+- Run-to-run noise is large with the pane hidden: an earlier run of the same spike case had
+  the thermal step at 0.63–1.0 s per refresh (median refresh 859 ms). Repeat in a visible
+  pane, the Tauri webview, and on Windows/Iris Xe before deciding on a fix.
+- Setup (live tiling) and the coarse run itself stay cheap: under 1 ms and under 90 ms.
+- Candidate fix (from BURN-33's list): an incremental thermal step for live jobs, so a refresh
+  costs the new samples, not the whole job so far.
+
+Also fixed while adding this case: GlSim.releaseTargets() left lastFbo pointing at a deleted
+framebuffer, so a sync() before the next run raised INVALID_OPERATION (1282) on bindFramebuffer,
+readBuffer and readPixels. It showed as "gl error: 1282" when a fluence-only job followed a
+thermal one.

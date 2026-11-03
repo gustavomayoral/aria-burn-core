@@ -14,6 +14,7 @@ import {
   CpuPeakTemperatureStep,
   GlOverview,
   GlSim,
+  LiveJob,
   SampleStore,
   interimSampler,
   loadMachineProfile,
@@ -396,6 +397,70 @@ async function runThermal(): Promise<void> {
   ;(window as unknown as { __benchThermal: string }).__benchThermal = lines.join('\n')
 }
 
+/**
+ * BURN-33: what one live (network) refresh costs as a streamed job grows.
+ * Replays the app's refresh (aria-burn burn.svelte.ts scheduleLive → tick):
+ * new batches arrive, the setup is rebuilt on live tiling, then a coarse run
+ * at the live head, which reruns the thermal step because the store changed.
+ * The app waits max(100 ms, 2 × last refresh) before the next one.
+ */
+async function runLive(steps = 10, only?: number[]): Promise<void> {
+  lines.length = 0
+  log('== Live job (BURN-33): cost of one refresh as the stream grows ==')
+  log(`user agent: ${navigator.userAgent}`)
+  log(`gl renderer: ${sim.caps.renderer}`)
+  log(`gl error before: ${gl!.getError()}`)
+  const replay = async (label: string, m: MachineProfile, material: MaterialProfile) => {
+    log()
+    log(`== ${label} ==`)
+    const { plan } = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), m)
+    const live = new LiveJob(1, 'bench', m, material)
+    const n = plan.batches.length
+    log(`batches ${n} · job ${plan.durationS.toFixed(0)} s · ${steps} refreshes`)
+    log('streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait')
+    let fed = 0
+    let lastRefresh = 0
+    const refreshes: number[] = []
+    for (let i = 1; i <= steps; i++) {
+      const upTo = Math.round((n * i) / steps)
+      for (; fed < upTo; fed++) live.onBatch(plan.batches[fed]!)
+      const t0 = performance.now()
+      const setup = live.setup()!
+      const t1 = performance.now()
+      sim.syncSamples(live.store)
+      sim.thermal(live.store, setup)
+      sim.sync()
+      const t2 = performance.now()
+      sim.runCoarse(live.store, setup, live.cutoffS(1, true))
+      sim.sync()
+      const t3 = performance.now()
+      lastRefresh = t3 - t0
+      refreshes.push(lastRefresh)
+      const pct = `${Math.round((100 * i) / steps)} %`.padStart(8)
+      const count = live.store.count.toLocaleString().padStart(10)
+      const tiles = String(setup.plan.tiles.length).padStart(5)
+      log(`${pct} | ${count} | ${tiles} | ${ms(t1 - t0).padStart(8)} | ${ms(t2 - t1).padStart(9)} | ${ms(t3 - t2).padStart(8)} | ${ms(lastRefresh).padStart(8)} | ${ms(Math.max(100, 2 * lastRefresh)).padStart(8)}`)
+      await nextFrame()
+    }
+    log(`refresh: ${stats(refreshes)} · last ${ms(lastRefresh)} → the app's next refresh waits ${ms(Math.max(100, 2 * lastRefresh))}`)
+    log(`gl error after replay: ${gl!.getError()}`)
+    sim.releaseTargets()
+    await nextFrame()
+  }
+  const cases: [string, MachineProfile, MaterialProfile][] = [
+    ['spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal)', spikeMachine, birch],
+    ['spike job, fluence only (no thermal step)', spikeMachine, birchFluence],
+    ['provisional diode, 5 µm pitch, 100 × 100 mm raster, birch (thermal)', machine, birch],
+  ]
+  try {
+    for (const i of only ?? cases.keys()) await replay(...cases[i]!)
+  } catch (err) {
+    log(`FAILED: ${String(err)}`)
+  }
+  log(`gl error: ${gl!.getError()}`)
+  ;(window as unknown as { __benchLive: string }).__benchLive = lines.join('\n')
+}
+
 /** Quick loop for tuning: thermal step only, on the spike job (store cached across calls). */
 let costStore: ReturnType<typeof storeFor> | null = null
 async function thermalCost(runs = 2): Promise<string> {
@@ -414,6 +479,8 @@ async function thermalCost(runs = 2): Promise<string> {
 
 document.getElementById('thermal')!.addEventListener('click', () => void runThermal().catch((e) => log(`ERROR ${String(e)}`)))
 ;(window as unknown as { __runThermal: typeof runThermal }).__runThermal = runThermal
+document.getElementById('live')!.addEventListener('click', () => void runLive().catch((e) => log(`ERROR ${String(e)}`)))
+;(window as unknown as { __runLive: typeof runLive }).__runLive = runLive
 document.getElementById('run')!.addEventListener('click', () => void run().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('fine')!.addEventListener('click', () => void runFine().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))
