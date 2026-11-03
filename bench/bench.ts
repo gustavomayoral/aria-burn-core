@@ -485,4 +485,25 @@ document.getElementById('run')!.addEventListener('click', () => void run().catch
 document.getElementById('fine')!.addEventListener('click', () => void runFine().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))
 ;(window as unknown as { __runBench: typeof run; __runFine: typeof runFine }).__runBench = run
+
+/** ?auto=live (or run, fine, thermal; comma-separated): run on load and POST each report to the bench server. */
+async function autoRun(names: string[]): Promise<void> {
+  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive() }
+  for (const name of names) {
+    const fn = runs[name]
+    if (!fn) {
+      log(`?auto: unknown run "${name}" (expected ${Object.keys(runs).join(', ')})`)
+      continue
+    }
+    await nextFrame()
+    try {
+      await fn()
+    } catch (e) {
+      log(`ERROR ${String(e)}`)
+    }
+    await fetch('/__bench-report', { method: 'POST', body: `[auto=${name}]\n${lines.join('\n')}` }).catch(() => {})
+  }
+}
+const auto = new URLSearchParams(location.search).get('auto')
+if (auto) void autoRun(auto.split(',').map((s) => s.trim()).filter(Boolean))
 ;(window as unknown as { __runFine: typeof runFine }).__runFine = runFine

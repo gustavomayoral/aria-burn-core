@@ -1,0 +1,184 @@
+BURN-33 bench in the real Laser Sim webview — macOS, WKWebView ("Apple GPU"), Apple M1, run 2026-11-03.
+Opened with aria-burn's ARIA_BURN_BENCH_URL (branch burn-33) pointed at this repo's `pnpm bench`
+page with ?auto=run,fine,thermal and ?auto=live. Reports came back over POST /__bench-report.
+The window was in the foreground. WKWebView's performance.now() has 1 ms resolution, so times are whole ms.
+NOT Windows/Iris Xe.
+
+Summary (against the COD-251/252 budgets: full-res < 2 s, coarse scrub < 50 ms):
+
+                                        WKWebView (this run)   Chromium, hidden pane (earlier files)
+  spike job, warm full-res              116 ms                 ~103 ms
+  spike job, cold full-res              1373 ms                -
+  spike job, coarse scrub (median)      4 ms                   4.5 ms
+  spike job, thermal step               708 ms                 ~2088 ms
+  5 µm job, warm full-res               1827 ms                ~1269 ms
+  5 µm job, first full-res              4833 ms (incl. binning) -
+  5 µm job, first with thermal          3497 ms                3713 ms
+  5 µm job, thermal step                1575 ms                ~2031 ms
+  5 µm job, coarse scrub (median/max)   11 / 132 ms            13 / 225 ms
+  live refresh, spike, at 100 %         819 ms                 ~907–2919 ms
+  live refresh, 5 µm, at 100 %          1761 ms                ~1793–2064 ms
+
+Reading it:
+- The 5 µm pitch only just meets the 2 s full-res budget on an M1 in the real webview (1.83 s warm),
+  and misses it on first render. Iris Xe will be slower, so it will very likely miss there.
+  The blur passes are most of it (stage-synced: blurH 283 ms + blurV 443 ms of ~970 ms).
+- The hidden Chromium pane overstated the thermal step about 3× on the spike job. Use these numbers,
+  not the hidden-pane ones, as the macOS baseline.
+- Live refreshes on thermal materials still grow with the job (0.6 → 0.8 s spike, 0.6 → 1.8 s at
+  5 µm), so the app's refresh interval reaches ~1.6–3.5 s. See BURN-35.
+- GL error 0 throughout. Conservation and GPU-vs-CPU checks pass.
+
+[auto=run]
+== Environment ==
+user agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)
+gl renderer: Apple GPU
+gl vendor: Apple Inc.
+MAX_TEXTURE_SIZE 16384 · EXT_float_blend true · timer query false
+timing: wall clock (performance.now), single sync per pass (finish + readPixels) unless "stage-synced"
+
+== Spike-equivalent job: 100 × 100 mm raster, 0.1 mm interval, σ 0.05 mm, 6000 mm/min, M4 S300, birch ==
+samples 5,905,951 in 361 batches · job 1121.2 s
+grid 6010 × 6020 @ 16.67 µm · tiles 1 · kernel radius 10 cells
+interim sampler 269.0 ms · sample store 141.0 ms (CPU, once per job)
+sample upload 30.0 ms (once per job)
+full-res: cold 1373.0 ms · warm ×10 min 114.0 ms / median 116.0 ms / max 118.0 ms → < 2 s PASS
+  stage-synced: deposit 36.0 ms · blurH 22.0 ms · blurV 21.0 ms · response 10.0 ms
+coarse scrub: first after full-res 70.0 ms · warm ×10 at moving cutoffs min 3.0 ms / median 4.0 ms / max 5.0 ms → < 50 ms PASS
+  stage-synced: deposit 4.0 ms · blurH 0.0 ms · blurV 1.0 ms · response 1.0 ms
+
+== Fluence conservation (GPU, Σ cell · pitch² over tile cores) ==
+  full-res expected 1.8309e+3 J
+    after deposit 1.8309e+3 (1.0000) PASS
+    after blur H  1.8309e+3 (1.0000) PASS
+    after blur V  1.8309e+3 (1.0000) PASS
+  coarse expected 1.8309e+3 J
+    after deposit 1.8309e+3 (1.0000) PASS
+    after blur H  1.8309e+3 (1.0000) PASS
+    after blur V  1.8308e+3 (0.9999) PASS
+  coarse / full-res after blur V: 0.9999 → PASS
+
+== GPU vs CPU reference, tiled vs untiled (provisional 10 W diode, σ 0.03 × 0.015 mm, birch) ==
+grid 1440 × 1440 · tiled plan 3 × 3 tiles of ≤ 700² (margin 20)
+  GPU untiled vs CPU:    max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU tiled vs CPU:      max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU tiled vs untiled:  max |Δfluence| 0.00e+0 of peak · max Δcolour 0 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  CPU-deposit fallback (no EXT_float_blend) tiled vs CPU: max |Δfluence| 2.37e-7 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  energy after blur V: CPU 1.46621e+1 · GPU tiled 1.09070e+1
+
+== Rotated spot (COD-256): same job, provisional diode spot at 30° (sheared Y pass) ==
+skew taps 27 · shear 0.5194 · margin 24
+  GPU untiled vs CPU:    max |Δfluence| 2.29e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2096704
+  GPU tiled vs CPU:      max |Δfluence| 2.29e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2096704
+  GPU tiled, rotated expected 1.0021e+1 J
+    after deposit 1.0021e+1 (1.0000) PASS
+    after blur H  1.0021e+1 (1.0000) PASS
+    after blur V  1.0021e+1 (1.0000) PASS
+  blur H+V, aligned min 4.0 ms / median 4.0 ms / max 5.0 ms · rotated min 6.0 ms / median 6.0 ms / max 7.0 ms
+
+[auto=fine]
+== Provisional-pitch job: 100 × 100 mm raster on the provisional 10 W diode (σ 0.03 × 0.015 mm → 5 µm pitch) ==
+samples 19,688,836 · sampler 802.0 ms · store 657.0 ms
+grid 20012 × 20040 · tiles 3 × 3 (padded ≤ 6711²)
+full-res tiled: first 4833.0 ms (includes binning the samples) · second 1821.0 ms
+  stage-synced: deposit 144.0 ms · blurH 283.0 ms · blurV 443.0 ms · response 100.0 ms
+  full-res tiled expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+coarse scrub: first (builds checkpoints) 149.0 ms · warm ×10 at moving cutoffs min 2.0 ms / median 10.0 ms / max 15.0 ms
+  stage-synced: deposit 9.0 ms · blurH 0.0 ms · blurV 1.0 ms · response 1.0 ms
+gl error: 0
+
+[auto=thermal]
+== Thermal step (COD-258): GPU vs CPU reference ==
+samples 47,614 · job 8.9 s · thermal grid 90 × 90 @ 0.100 mm · bins 890 × 10.0 ms (lag 2) · active 848
+CPU reference 999.0 ms · GPU 319.0 ms (incl. readback)
+  per-sample eAbs max rel Δ 2.23e-4 · dose weight max |Δ| 1.99e-4 · bulk map max |Δ| 195.149 K of 4945 K, cells off by > 1 %: 229 / 8100
+  energy: Σ eAbs 1.46634e+1 J (CPU grid holds 1.46634e+1 J)
+  pipeline GPU vs CPU (dose):  max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  pipeline GPU tiled vs CPU:   max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU dose, untiled expected 1.0907e+1 J
+    after deposit 1.0907e+1 (1.0000) PASS
+    after blur H  1.0907e+1 (1.0000) PASS
+    after blur V  1.0907e+1 (1.0000) PASS
+
+== Cost: spike job, σ 0.05 mm, 100 × 100 mm raster ==
+samples 5,905,951 · job 1121 s · grid 6010 × 6020 · tiles 1
+thermal grid 254 × 255 @ 0.402 mm · bins 1024 × 1095 ms (lag 1) · active 1025
+thermal step (once per job/material, incl. statics and readback): min 660.0 ms / median 708.0 ms / max 714.0 ms
+  last run: CPU statics 178.0 ms · GPU bin loop 401.0 ms · readback + bulk map 81.0 ms
+full-res: fluence only min 114.0 ms / median 115.0 ms / max 151.0 ms · thermal, first (uploads bulk map) 797.0 ms · warm min 115.0 ms / median 115.0 ms / max 116.0 ms
+coarse scrub with thermal: min 2.0 ms / median 2.0 ms / max 63.0 ms
+  full-res dose expected 1.8309e+3 J
+    after deposit 1.8309e+3 (1.0000) PASS
+    after blur H  1.8309e+3 (1.0000) PASS
+    after blur V  1.8309e+3 (1.0000) PASS
+
+== Cost: provisional diode, 5 µm pitch, 100 × 100 mm raster ==
+samples 19,688,836 · job 1121 s · grid 20012 × 20040 · tiles 9
+thermal grid 254 × 255 @ 0.402 mm · bins 1024 × 1095 ms (lag 1) · active 1025
+thermal step (once per job/material, incl. statics and readback): min 1548.0 ms / median 1575.0 ms / max 2155.0 ms
+  last run: CPU statics 1102.0 ms · GPU bin loop 954.0 ms · readback + bulk map 99.0 ms
+full-res: fluence only min 1812.0 ms / median 1830.0 ms / max 1866.0 ms · thermal, first (uploads bulk map) 3497.0 ms · warm min 1787.0 ms / median 1827.0 ms / max 1839.0 ms
+coarse scrub with thermal: min 2.0 ms / median 11.0 ms / max 132.0 ms
+  full-res dose expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+gl error: 0
+
+[auto=live]
+== Live job (BURN-33): cost of one refresh as the stream grows ==
+user agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)
+gl renderer: Apple GPU
+gl error before: 0
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |    589,824 |     1 |   0.0 ms |  591.0 ms |  44.0 ms | 635.0 ms | 1270.0 ms
+    20 % |  1,179,648 |     1 |   0.0 ms |  584.0 ms |  19.0 ms | 603.0 ms | 1206.0 ms
+    30 % |  1,769,472 |     1 |   0.0 ms |  587.0 ms |  20.0 ms | 607.0 ms | 1214.0 ms
+    40 % |  2,359,296 |     1 |   0.0 ms |  603.0 ms |  23.0 ms | 626.0 ms | 1252.0 ms
+    50 % |  2,965,504 |     1 |   0.0 ms |  666.0 ms |  34.0 ms | 700.0 ms | 1400.0 ms
+    60 % |  3,555,328 |     1 |   0.0 ms |  680.0 ms |  46.0 ms | 726.0 ms | 1452.0 ms
+    70 % |  4,145,152 |     1 |   0.0 ms |  707.0 ms |  41.0 ms | 748.0 ms | 1496.0 ms
+    80 % |  4,734,976 |     1 |   0.0 ms |  694.0 ms |  36.0 ms | 730.0 ms | 1460.0 ms
+    90 % |  5,324,800 |     1 |   0.0 ms |  736.0 ms |  51.0 ms | 787.0 ms | 1574.0 ms
+   100 % |  5,905,951 |     1 |   0.0 ms |  757.0 ms |  62.0 ms | 819.0 ms | 1638.0 ms
+refresh: min 603.0 ms / median 726.0 ms / max 819.0 ms · last 819.0 ms → the app's next refresh waits 1638.0 ms
+gl error after replay: 0
+
+== spike job, fluence only (no thermal step) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |    589,824 |     1 |   1.0 ms |    1.0 ms |  19.0 ms |  21.0 ms | 100.0 ms
+    20 % |  1,179,648 |     1 |   0.0 ms |    1.0 ms |  15.0 ms |  16.0 ms | 100.0 ms
+    30 % |  1,769,472 |     1 |   0.0 ms |    2.0 ms |  19.0 ms |  21.0 ms | 100.0 ms
+    40 % |  2,359,296 |     1 |   0.0 ms |    1.0 ms |  23.0 ms |  24.0 ms | 100.0 ms
+    50 % |  2,965,504 |     1 |   0.0 ms |    1.0 ms |  28.0 ms |  29.0 ms | 100.0 ms
+    60 % |  3,555,328 |     1 |   0.0 ms |    2.0 ms |  30.0 ms |  32.0 ms | 100.0 ms
+    70 % |  4,145,152 |     1 |   0.0 ms |    1.0 ms |  35.0 ms |  36.0 ms | 100.0 ms
+    80 % |  4,734,976 |     1 |   0.0 ms |    1.0 ms |  34.0 ms |  35.0 ms | 100.0 ms
+    90 % |  5,324,800 |     1 |   0.0 ms |    2.0 ms |  40.0 ms |  42.0 ms | 100.0 ms
+   100 % |  5,905,951 |     1 |   0.0 ms |    1.0 ms |  44.0 ms |  45.0 ms | 100.0 ms
+refresh: min 16.0 ms / median 32.0 ms / max 45.0 ms · last 45.0 ms → the app's next refresh waits 100.0 ms
+gl error after replay: 0
+
+== provisional diode, 5 µm pitch, 100 × 100 mm raster, birch (thermal) ==
+batches 1202 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |  1,966,080 |     3 |   0.0 ms |  624.0 ms |  14.0 ms | 638.0 ms | 1276.0 ms
+    20 % |  3,932,160 |     3 |   0.0 ms |  662.0 ms |  29.0 ms | 691.0 ms | 1382.0 ms
+    30 % |  5,914,624 |     3 |   0.0 ms |  756.0 ms |  39.0 ms | 795.0 ms | 1590.0 ms
+    40 % |  7,880,704 |     6 |   0.0 ms | 1018.0 ms |  63.0 ms | 1081.0 ms | 2162.0 ms
+    50 % |  9,846,784 |     6 |   0.0 ms | 1320.0 ms |  71.0 ms | 1391.0 ms | 2782.0 ms
+    60 % | 11,812,864 |     6 |   0.0 ms | 1164.0 ms |  71.0 ms | 1235.0 ms | 2470.0 ms
+    70 % | 13,778,944 |     6 |   0.0 ms | 1372.0 ms |  93.0 ms | 1465.0 ms | 2930.0 ms
+    80 % | 15,761,408 |     9 |   0.0 ms | 1635.0 ms | 107.0 ms | 1742.0 ms | 3484.0 ms
+    90 % | 17,727,488 |     9 |   0.0 ms | 1515.0 ms |  91.0 ms | 1606.0 ms | 3212.0 ms
+   100 % | 19,688,836 |     9 |   0.0 ms | 1654.0 ms | 107.0 ms | 1761.0 ms | 3522.0 ms
+refresh: min 638.0 ms / median 1391.0 ms / max 1761.0 ms · last 1761.0 ms → the app's next refresh waits 3522.0 ms
+gl error after replay: 0
+gl error: 0
