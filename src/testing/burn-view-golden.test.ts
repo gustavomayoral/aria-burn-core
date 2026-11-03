@@ -111,7 +111,7 @@ describe('burn view rules', () => {
 
   it('the wood grain varies; the bleach texture is subtle', () => {
     const wood = Array.from({ length: 200 }, (_, i) => baseGain('wood', 3.1, i * 0.05))
-    expect(Math.max(...wood) - Math.min(...wood)).toBeGreaterThan(0.08)
+    expect(Math.max(...wood) - Math.min(...wood)).toBeGreaterThan(0.05)
     const cast = Array.from({ length: 200 }, (_, i) => baseGain('cast', i * 0.5, i * 0.3))
     expect(Math.max(...cast) - Math.min(...cast)).toBeLessThan(0.04)
   })

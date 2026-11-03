@@ -152,7 +152,7 @@ export function baseGain(texture: TextureKind, x: number, y: number): number {
       const fibre = valueNoise(x / 1.6, y / 0.22)
       const phase = y / 1.9 + 1.6 * warp
       const band = (0.5 + 0.5 * Math.sin(6.2831853 * phase)) ** 3
-      return 1.04 - 0.12 * band - 0.05 * (fibre - 0.5)
+      return 1.025 - 0.065 * band - 0.04 * (fibre - 0.5)
     }
     case 'cast':
       return 1 + 0.035 * (valueNoise(x / 40, y / 40) - 0.5)

@@ -26,7 +26,7 @@ float baseGain(int kind, vec2 mm) {
     float fibre = valueNoise(mm / vec2(1.6, 0.22));
     float phase = mm.y / 1.9 + 1.6 * warp;
     float band = pow(0.5 + 0.5 * sin(6.2831853 * phase), 3.0);
-    return 1.04 - 0.12 * band - 0.05 * (fibre - 0.5);
+    return 1.025 - 0.065 * band - 0.04 * (fibre - 0.5);
   }
   if (kind == 1) return 1.0 + 0.035 * (valueNoise(mm / 40.0) - 0.5);
   return 1.0 + 0.07 * (valueNoise(mm / vec2(30.0, 0.05)) - 0.5) + 0.025 * (valueNoise(mm / 6.0) - 0.5);
