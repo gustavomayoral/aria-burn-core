@@ -12,7 +12,7 @@
 // each sample's dose energy instead: the R32F targets then hold thermal dose,
 // and the response reads the bulk-temperature map for fire risk.
 
-import type { CellRect, Tile } from '../../contract/index.ts'
+import type { CellRect, GridSpec, Tile, TilePlan } from '../../contract/index.ts'
 import { UNTOUCHED_FRACTION, verdictThresholds } from '../../contract/index.ts'
 import { depositCpu, type StageEnergy } from '../cpu.ts'
 import { coarseSetup, type SimSetup } from '../job.ts'
@@ -58,6 +58,11 @@ export interface GlRunOptions {
   overview?: GlOverview
   /** Called after each tile's response pass, before its targets are reused. */
   onTile?: (tile: GlTileView) => void
+  /**
+   * Run only this rect of the job grid, as one tile (core = rect, padded by the
+   * kernel margin), with the binned deposit: the zoomed burn view's 1:1 detail (COD-259).
+   */
+  region?: CellRect
 }
 
 export interface GlRunResult {
@@ -134,15 +139,30 @@ class TargetSet {
   }
 }
 
-/** The UI canvas source: job-wide colour and verdict at display resolution. */
+/** Mip levels for a full chain down to 1×1. */
+export const mipLevels = (w: number, h: number) => Math.floor(Math.log2(Math.max(w, h, 1))) + 1
+
+/**
+ * The UI canvas source: job-wide colour, verdict and field at display resolution.
+ * `field` (RGBA16F) holds the box-filtered fluence or dose (R) and depth in mm
+ * (G); the burn view shades relief and halos from it (COD-259). Colour and
+ * field are mipmapped so zoomed-out views don't alias.
+ */
 export class GlOverview {
   color: WebGLTexture | null = null
   verdict: WebGLTexture | null = null
+  field: WebGLTexture | null = null
+  /** Fraction of cells per verdict bucket [under, in range, over, fire risk] (RGBA16F), for the overlay's regions. */
+  cover: WebGLTexture | null = null
   fbo: WebGLFramebuffer | null = null
   width = 0
   height = 0
   /** Job cells per overview pixel (same on both axes). */
   cellsPerPixel = 1
+  /** The job grid last composited, so pixels map back to mm. */
+  grid: GridSpec | null = null
+  /** Bumped after every run that composited into it. */
+  version = 0
 
   constructor(
     private readonly gl: WebGL2RenderingContext,
@@ -160,17 +180,30 @@ export class GlOverview {
     const gl = this.gl
     this.width = w
     this.height = h
-    this.color = texture(gl, gl.RGBA8, w, h)
+    this.color = mipTexture(gl, gl.RGBA8, w, h)
     this.verdict = texture(gl, gl.R8UI, w, h)
-    this.fbo = framebuffer(gl, this.color, this.verdict)
+    this.field = mipTexture(gl, gl.RGBA16F, w, h)
+    this.cover = mipTexture(gl, gl.RGBA16F, w, h)
+    this.fbo = framebuffer(gl, this.color, this.verdict, this.field, this.cover)
+  }
+
+  /** Mip chains of colour, field and cover, once all tiles are in. */
+  finish(): void {
+    if (!this.color || !this.field || !this.cover) return
+    const gl = this.gl
+    for (const t of [this.color, this.field, this.cover]) {
+      gl.bindTexture(gl.TEXTURE_2D, t)
+      gl.generateMipmap(gl.TEXTURE_2D)
+    }
+    this.version++
   }
 
   dispose(): void {
-    if (this.color) this.gl.deleteTexture(this.color)
-    if (this.verdict) this.gl.deleteTexture(this.verdict)
+    for (const t of [this.color, this.verdict, this.field, this.cover]) if (t) this.gl.deleteTexture(t)
     if (this.fbo) this.gl.deleteFramebuffer(this.fbo)
-    this.color = this.verdict = this.fbo = null
+    this.color = this.verdict = this.field = this.cover = this.fbo = null
     this.width = this.height = 0
+    this.grid = null
   }
 
   /** Blit the colour overview to the canvas (default framebuffer), letterboxed. Row 0 = min Y = bottom. */
@@ -201,6 +234,40 @@ export class GlOverview {
     gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, out)
     return out
   }
+}
+
+/** A texture with a full, trilinearly filtered mip chain (RGBA8, or RGBA16F: filterable without OES_texture_float_linear). */
+export function mipTexture(gl: WebGL2RenderingContext, internal: number, w: number, h: number): WebGLTexture {
+  const t = gl.createTexture()!
+  gl.bindTexture(gl.TEXTURE_2D, t)
+  gl.texStorage2D(gl.TEXTURE_2D, mipLevels(w, h), internal, w, h)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  return t
+}
+
+/** One tile covering `rect` of the plan's grid, padded by the plan's margin. */
+export function regionPlan(plan: TilePlan, rect: CellRect): TilePlan {
+  const { grid, marginCells } = plan
+  const x = Math.max(0, Math.min(grid.width - 1, Math.floor(rect.x)))
+  const y = Math.max(0, Math.min(grid.height - 1, Math.floor(rect.y)))
+  const core = {
+    x,
+    y,
+    width: Math.max(1, Math.min(grid.width, Math.ceil(rect.x + rect.width)) - x),
+    height: Math.max(1, Math.min(grid.height, Math.ceil(rect.y + rect.height)) - y),
+  }
+  const px = Math.max(0, core.x - marginCells)
+  const py = Math.max(0, core.y - marginCells)
+  const padded = {
+    x: px,
+    y: py,
+    width: Math.min(grid.width, core.x + core.width + marginCells) - px,
+    height: Math.min(grid.height, core.y + core.height + marginCells) - py,
+  }
+  return { grid, marginCells, cols: 1, rows: 1, tiles: [{ col: 0, row: 0, core, padded }] }
 }
 
 export class GlSim {
@@ -625,7 +692,10 @@ export class GlSim {
 
   private runSetup(store: SampleStore, setup: SimSetup, poolKind: 'full' | 'coarse', options: GlRunOptions): GlRunResult {
     const gl = this.gl
-    const { grid, plan, material, separable } = setup
+    const { grid, material, separable } = setup
+    const plan = options.region ? regionPlan(setup.plan, options.region) : setup.plan
+    // A region is a small window of a possibly huge job: draw only the bins that reach it.
+    const binned = plan.tiles.length > 1 || !!options.region
     for (const t of plan.tiles)
       if (Math.max(t.padded.width, t.padded.height) > this.caps.maxTextureSize)
         throw new Error(`tile ${t.padded.width}×${t.padded.height} exceeds MAX_TEXTURE_SIZE ${this.caps.maxTextureSize}`)
@@ -674,7 +744,7 @@ export class GlSim {
           if (poolKind === 'coarse') this.depositCoarse(store, setup, ts.a, n)
           else {
             this.beginDeposit(setup, padded, ts.a.fbo)
-            if (plan.tiles.length > 1) this.depositBinned(store, setup, padded, options.timeCutoffS ?? Infinity)
+            if (binned) this.depositBinned(store, setup, padded, options.timeCutoffS ?? Infinity)
             else this.drawSamples(this.sampleBuffer, 0, n)
           }
           gl.disable(gl.BLEND)
@@ -772,6 +842,7 @@ export class GlSim {
       }
     }
     if (energy) energy.clippedJ = energy.expectedJ - energy.depositJ
+    options.overview?.finish()
     this.lastFbo = ts.a.fbo
     this.active = null
     return { sampleCount: n, tileCount: plan.tiles.length, stageMs, energy, cpuDeposit: !this.caps.floatBlend, thermal: th?.result ?? null }
@@ -781,6 +852,7 @@ export class GlSim {
     const gl = this.gl
     const { grid } = setup
     ov.resize(grid.width, grid.height)
+    ov.grid = grid
     const cpp = ov.cellsPerPixel
     const { core, padded } = tile
     // Overview pixels whose centre cell lies in this core.
@@ -790,7 +862,7 @@ export class GlSim {
     const py1 = Math.min(ov.height, Math.ceil((core.y + core.height) / cpp - 0.5))
     if (px1 <= px0 || py1 <= py0) return
     gl.bindFramebuffer(gl.FRAMEBUFFER, ov.fbo)
-    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1])
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3])
     gl.viewport(0, 0, ov.width, ov.height)
     gl.enable(gl.SCISSOR_TEST)
     gl.scissor(px0, py0, px1 - px0, py1 - py0)
@@ -798,11 +870,17 @@ export class GlSim {
     gl.bindTexture(gl.TEXTURE_2D, ts.color)
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, ts.verdict)
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, ts.a.tex)
+    gl.activeTexture(gl.TEXTURE3)
+    gl.bindTexture(gl.TEXTURE_2D, ts.depth)
     gl.bindVertexArray(this.emptyVao)
     this.overviewProgram
       .use()
       .i('u_color', 0)
       .i('u_verdict', 1)
+      .i('u_fluence', 2)
+      .i('u_depth', 3)
       .f('u_cellsPerPixel', cpp, cpp)
       .f('u_coreMin', core.x, core.y)
       .f('u_coreMax', core.x + core.width, core.y + core.height)

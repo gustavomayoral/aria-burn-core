@@ -81,7 +81,7 @@ export function responseParams(material: MaterialProfile): ResponseParams {
   }
 }
 
-export function rampT(p: ResponseParams, fluence: number): number {
+export function rampT(p: Pick<ResponseParams, 'rampStart' | 'rampEnd' | 'gamma'>, fluence: number): number {
   const span = p.rampEnd - p.rampStart
   const t = span > 0 ? (fluence - p.rampStart) / span : fluence >= p.rampStart ? 1 : 0
   const c = Math.min(1, Math.max(0, t))

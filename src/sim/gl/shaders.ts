@@ -239,6 +239,8 @@ precision highp float;
 precision highp int;
 uniform highp sampler2D u_color;
 uniform highp usampler2D u_verdict;
+uniform highp sampler2D u_fluence;
+uniform highp sampler2D u_depth;
 uniform vec2 u_cellsPerPixel;
 uniform vec2 u_coreMin;
 uniform vec2 u_coreMax;
@@ -246,11 +248,15 @@ uniform vec2 u_paddedOrigin;
 uniform int u_taps;
 layout(location = 0) out vec4 o_color;
 layout(location = 1) out uvec4 o_verdict;
+layout(location = 2) out vec4 o_field;
+layout(location = 3) out vec4 o_cover;
 void main() {
   vec2 lo = max(floor(gl_FragCoord.xy - 0.5) * u_cellsPerPixel, u_coreMin);
   vec2 hi = min((floor(gl_FragCoord.xy - 0.5) + 1.0) * u_cellsPerPixel, u_coreMax);
   vec2 step = max((hi - lo) / float(u_taps), vec2(1e-6));
   vec4 acc = vec4(0.0);
+  vec2 field = vec2(0.0);
+  vec4 cover = vec4(0.0);
   uint worst = 0u;
   float n = 0.0;
   for (int j = 0; j < u_taps; j++)
@@ -259,9 +265,14 @@ void main() {
       if (any(greaterThanEqual(c, hi))) continue;
       ivec2 q = ivec2(floor(c - u_paddedOrigin));
       acc += texelFetch(u_color, q, 0);
-      worst = max(worst, texelFetch(u_verdict, q, 0).r);
+      field += vec2(texelFetch(u_fluence, q, 0).r, texelFetch(u_depth, q, 0).r);
+      uint v = texelFetch(u_verdict, q, 0).r;
+      cover += vec4(equal(uvec4(v), uvec4(1u, 2u, 3u, 4u)));
+      worst = max(worst, v);
       n += 1.0;
     }
   o_color = n > 0.0 ? acc / n : vec4(0.0);
   o_verdict = uvec4(worst, 0u, 0u, 0u);
+  o_field = vec4(n > 0.0 ? field / n : vec2(0.0), 0.0, 1.0);
+  o_cover = n > 0.0 ? cover / n : vec4(0.0);
 }`

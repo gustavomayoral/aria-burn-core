@@ -1200,6 +1200,11 @@
             "user"
           ]
         },
+        "label": {
+          "minLength": 1,
+          "description": "Short honesty tag the UI shows with the material name, e.g. \"provisional — not validated against real burns\". Changes with the data, not the code (COD-259).",
+          "type": "string"
+        },
         "notes": {
           "description": "Free text: data sources, batch, fit notes",
           "type": "string"

@@ -14,5 +14,5 @@
   },
   "fireRisk": { "kind": "none" },
   "thermal": { "kind": "none" },
-  "provenance": { "source": "provisional", "notes": "PROVISIONAL - not validated against real burns (COD-266). Derived from published settings and datasheets; COD-254 replaces these. Sources and derivation: src/profiles/provisional/SOURCES.md" }
+  "provenance": { "source": "provisional", "label": "provisional — not validated against real burns", "notes": "PROVISIONAL - not validated against real burns (COD-266). Derived from published settings and datasheets; COD-254 replaces these. Sources and derivation: src/profiles/provisional/SOURCES.md" }
 }

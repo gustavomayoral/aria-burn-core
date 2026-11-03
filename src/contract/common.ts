@@ -92,6 +92,13 @@ export const Provenance = named(
         description:
           'provisional = published data (COD-266), calibrated = fitted from a photographed grid (COD-257), user = hand-entered',
       }),
+      label: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description:
+            'Short honesty tag the UI shows with the material name, e.g. "provisional — not validated against real burns". Changes with the data, not the code (COD-259).',
+        }),
+      ),
       notes: Type.Optional(Type.String({ description: 'Free text: data sources, batch, fit notes' })),
       fittedAt: Type.Optional(Type.String({ description: 'ISO-8601 timestamp of the fit', format: 'date-time' })),
       meanDeltaE: Type.Optional(NonNegative('Mean CIEDE2000 between fitted and photographed cells')),
