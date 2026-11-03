@@ -11,6 +11,7 @@ import birchJson from '../src/profiles/provisional/birch-ply.json'
 import machineJson from '../src/profiles/provisional/machine-10w-diode.json'
 import { decodeSampleBatch, type JobModel, type MachineProfile } from '../src/contract/index.ts'
 import {
+  CpuPeakTemperatureStep,
   GlOverview,
   GlSim,
   SampleStore,
@@ -21,9 +22,11 @@ import {
   simulateCpu,
   stitch,
   type GlRunResult,
+  type GlThermalResult,
   type SimSetup,
   type StageEnergy,
 } from '../src/sim/index.ts'
+import type { MaterialProfile } from '../src/contract/index.ts'
 import { concatJobs, rasterJob, squareJob } from '../src/sim/test-jobs.ts'
 
 const out = document.getElementById('out')!
@@ -42,6 +45,8 @@ const nextFrame = () => new Promise((r) => setTimeout(r, 0))
 
 const machine = loadMachineProfile(machineJson)
 const birch = loadMaterialProfile(birchJson)
+/** Birch with the thermal step off: the COD-264 baseline, to measure what the thermal step adds. */
+const birchFluence: MaterialProfile = { ...birch, thermal: { kind: 'none' }, fireRisk: { kind: 'none' } }
 /** COD-251/252 benchmark spot: round σ = 0.05 mm, pitch σ/3 → 6000² grid for 100 mm. */
 const spikeMachine: MachineProfile = { ...machine, spot: { sigmaXMm: 0.05, sigmaYMm: 0.05, angleDeg: 0 } }
 
@@ -213,7 +218,8 @@ async function run(): Promise<BenchReport> {
   const untiled = setupJob(small.store.burnBounds!, machine, birch)
   const tiled = setupJob(small.store.burnBounds!, machine, birch, { maxTileCells: 700 })
   const cpu = stitch(simulateCpu(small.store, untiled))
-  const cpuArrays = { fluence: cpu.fluence.data, color: cpu.color, verdict: cpu.verdict }
+  // The GPU tiles hold thermal dose for a material with a thermal model.
+  const cpuArrays = { fluence: cpu.dose ?? cpu.fluence.data, color: cpu.color, verdict: cpu.verdict }
   log(`grid ${untiled.grid.width} × ${untiled.grid.height} · tiled plan ${tiled.plan.cols} × ${tiled.plan.rows} tiles of ≤ 700² (margin ${tiled.plan.marginCells})`)
   const gpuUntiled = gpuStitched(small.store, untiled)
   const gpuTiled = gpuStitched(small.store, tiled)
@@ -232,7 +238,7 @@ async function run(): Promise<BenchReport> {
   const rotUntiled = setupJob(small.store.burnBounds!, rotated, birch)
   const rotTiled = setupJob(small.store.burnBounds!, rotated, birch, { maxTileCells: 700 })
   const rotCpu = stitch(simulateCpu(small.store, rotUntiled))
-  const rotCpuArrays = { fluence: rotCpu.fluence.data, color: rotCpu.color, verdict: rotCpu.verdict }
+  const rotCpuArrays = { fluence: rotCpu.dose ?? rotCpu.fluence.data, color: rotCpu.color, verdict: rotCpu.verdict }
   const rotGpuTiled = gpuStitched(small.store, rotTiled)
   log(`skew taps ${rotUntiled.separable.y.radius * 2 + 1} · shear ${rotUntiled.separable.skew?.shear.toFixed(4)} · margin ${rotTiled.plan.marginCells}`)
   log(`  GPU untiled vs CPU:    ${diff(gpuStitched(small.store, rotUntiled), rotCpuArrays)}`)
@@ -290,6 +296,124 @@ async function runFine(): Promise<void> {
   ;(window as unknown as { __benchFine: string }).__benchFine = lines.join('\n')
 }
 
+/** COD-258: the thermal step on the GPU against the CPU reference, and what it costs. */
+async function runThermal(): Promise<void> {
+  lines.length = 0
+  log('== Thermal step (COD-258): GPU vs CPU reference ==')
+  const small = storeFor(
+    concatJobs(
+      rasterJob({ x0Mm: 1, y0Mm: 1, widthMm: 6, heightMm: 3, intervalMm: 0.08, feedMmPerMin: 4000, s: 350 }),
+      squareJob(0.5, 0.5, 7, 900, 800, 'm3'),
+    ),
+    machine,
+  )
+  const setup = setupJob(small.store.burnBounds!, machine, birch)
+  sim.syncSamples(small.store)
+  const t0 = performance.now()
+  const cpuT = new CpuPeakTemperatureStep().run(small.store, machine, birch, setup.thermalKernel)
+  const cpuMs = performance.now() - t0
+  const gpuT = sim.thermalStep!.run(small.store, machine, birch, setup.thermalKernel)
+  const p = gpuT.plan!
+  log(`samples ${small.store.count.toLocaleString()} · job ${small.plan.durationS.toFixed(1)} s · thermal grid ${p.grid.width} × ${p.grid.height} @ ${p.grid.pitchMm.toFixed(3)} mm · bins ${p.binCount} × ${(p.binS * 1000).toFixed(1)} ms (lag ${p.lagBins}) · active ${gpuT.activeBins}`)
+  log(`CPU reference ${ms(cpuMs)} · GPU ${ms(gpuT.gpuMs)} (incl. readback)`)
+  let maxA = 0
+  let maxW = 0
+  let maxB = 0
+  let peakB = 0
+  let badB = 0
+  for (let i = 0; i < gpuT.count; i++) {
+    maxA = Math.max(maxA, Math.abs(gpuT.eAbs[i]! - cpuT.eAbs[i]!) / cpuT.eAbs[i]!)
+    maxW = Math.max(maxW, Math.abs(gpuT.eDose[i]! / gpuT.eAbs[i]! - cpuT.eDose[i]! / cpuT.eAbs[i]!))
+  }
+  for (let c = 0; c < cpuT.bulkK!.length; c++) {
+    const d = Math.abs(gpuT.bulkK![c]! - cpuT.bulkK![c]!)
+    maxB = Math.max(maxB, d)
+    // A sample on a cell edge can land in either cell (f32 vs f64), so a few cells differ outright.
+    if (d > 0.01 * Math.max(cpuT.bulkK![c]!, 1)) badB++
+    peakB = Math.max(peakB, cpuT.bulkK![c]!)
+  }
+  log(`  per-sample eAbs max rel Δ ${maxA.toExponential(2)} · dose weight max |Δ| ${maxW.toExponential(2)} · bulk map max |Δ| ${maxB.toFixed(3)} K of ${peakB.toFixed(0)} K, cells off by > 1 %: ${badB} / ${cpuT.bulkK!.length}`)
+  let eAbs = 0
+  for (let i = 0; i < gpuT.count; i++) eAbs += gpuT.eAbs[i]!
+  log(`  energy: Σ eAbs ${eAbs.toExponential(5)} J (CPU grid holds ${cpuT.grid.energyJ().toExponential(5)} J)`)
+  // Pipeline on the same thermal energies (the GPU result is now cached for the CPU too).
+  const cpu = stitch(simulateCpu(small.store, setup))
+  log(`  pipeline GPU vs CPU (dose):  ${diff(gpuStitched(small.store, setup), { fluence: cpu.dose!, color: cpu.color, verdict: cpu.verdict })}`)
+  const tiled = setupJob(small.store.burnBounds!, machine, birch, { maxTileCells: 700 })
+  log(`  pipeline GPU tiled vs CPU:   ${diff(gpuStitched(small.store, tiled), { fluence: cpu.dose!, color: cpu.color, verdict: cpu.verdict })}`)
+  energyTable('GPU dose, untiled', sim.run(small.store, setup, { measureEnergy: true }).energy!)
+  await nextFrame()
+
+  const cost = async (label: string, m: MachineProfile) => {
+    log()
+    log(`== Cost: ${label} ==`)
+    const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), m)
+    const withT = setupJob(job.store.burnBounds!, m, birch)
+    const without = setupJob(job.store.burnBounds!, m, birchFluence)
+    log(`samples ${job.store.count.toLocaleString()} · job ${job.plan.durationS.toFixed(0)} s · grid ${withT.grid.width} × ${withT.grid.height} · tiles ${withT.plan.tiles.length}`)
+    sim.syncSamples(job.store)
+    sim.run(job.store, without)
+    sim.sync()
+    await nextFrame()
+    const base: number[] = []
+    for (let i = 0; i < 3; i++) {
+      base.push(timedRun(() => sim.run(job.store, without, { overview })).ms)
+      await nextFrame()
+    }
+    const thermalRuns: GlThermalResult[] = []
+    for (let i = 0; i < 3; i++) {
+      thermalRuns.push(sim.thermalStep!.run(job.store, m, birch, withT.thermalKernel))
+      await nextFrame()
+    }
+    const tp = thermalRuns[0]!.plan!
+    log(`thermal grid ${tp.grid.width} × ${tp.grid.height} @ ${tp.grid.pitchMm.toFixed(3)} mm · bins ${tp.binCount} × ${(tp.binS * 1000).toFixed(0)} ms (lag ${tp.lagBins}) · active ${thermalRuns[0]!.activeBins}`)
+    log(`thermal step (once per job/material, incl. statics and readback): ${stats(thermalRuns.map((r) => r.gpuMs))}`)
+    const tm = thermalRuns[thermalRuns.length - 1]!.timing
+    log(`  last run: CPU statics ${ms(tm.staticsMs)} · GPU bin loop ${ms(tm.loopMs)} · readback + bulk map ${ms(tm.readbackMs)}`)
+    // Warm full-res with the thermal result cached: the per-run cost of depositing dose.
+    const first = timedRun(() => sim.run(job.store, withT, { overview })).ms
+    const warm: number[] = []
+    for (let i = 0; i < 3; i++) {
+      warm.push(timedRun(() => sim.run(job.store, withT, { overview })).ms)
+      await nextFrame()
+    }
+    log(`full-res: fluence only ${stats(base)} · thermal, first (uploads bulk map) ${ms(first)} · warm ${stats(warm)}`)
+    const coarse: number[] = []
+    for (let i = 0; i < 5; i++) coarse.push(timedRun(() => sim.runCoarse(job.store, withT, job.plan.durationS * (0.1 + 0.18 * i))).ms)
+    log(`coarse scrub with thermal: ${stats(coarse)}`)
+    energyTable('full-res dose', sim.run(job.store, withT, { measureEnergy: true }).energy!)
+    overview.drawToCanvas()
+    sim.releaseTargets()
+    await nextFrame()
+  }
+  try {
+    await cost('spike job, σ 0.05 mm, 100 × 100 mm raster', spikeMachine)
+    await cost('provisional diode, 5 µm pitch, 100 × 100 mm raster', machine)
+  } catch (err) {
+    log(`FAILED: ${String(err)}`)
+  }
+  log(`gl error: ${gl!.getError()}`)
+  ;(window as unknown as { __benchThermal: string }).__benchThermal = lines.join('\n')
+}
+
+/** Quick loop for tuning: thermal step only, on the spike job (store cached across calls). */
+let costStore: ReturnType<typeof storeFor> | null = null
+async function thermalCost(runs = 2): Promise<string> {
+  costStore ??= storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), spikeMachine)
+  const setup = setupJob(costStore.store.burnBounds!, spikeMachine, birch)
+  sim.syncSamples(costStore.store)
+  const out: string[] = []
+  for (let i = 0; i < runs; i++) {
+    const r = sim.thermalStep!.run(costStore.store, spikeMachine, birch, setup.thermalKernel)
+    out.push(`${ms(r.gpuMs)} (statics ${ms(r.timing.staticsMs)} · loop ${ms(r.timing.loopMs)} · bulk ${ms(r.timing.readbackMs)}) bins ${r.activeBins} · grid ${r.plan!.grid.width}² @ ${r.plan!.grid.pitchMm.toFixed(3)} mm`)
+    await nextFrame()
+  }
+  return out.join('\n')
+}
+;(window as unknown as { __thermalCost: typeof thermalCost }).__thermalCost = thermalCost
+
+document.getElementById('thermal')!.addEventListener('click', () => void runThermal().catch((e) => log(`ERROR ${String(e)}`)))
+;(window as unknown as { __runThermal: typeof runThermal }).__runThermal = runThermal
 document.getElementById('run')!.addEventListener('click', () => void run().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('fine')!.addEventListener('click', () => void runFine().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))

@@ -2,6 +2,8 @@
 // GLSL ES 3.00 for the WebGL2 pipeline. Each stage mirrors the CPU reference
 // (cpu.ts, response.ts); keep them in step.
 
+import { PER_SAMPLE_WIDTH } from './thermal-shaders.ts'
+
 /** Fullscreen triangle; fragment stages work in texel coordinates via gl_FragCoord. */
 export const FULLSCREEN_VS = `#version 300 es
 void main() {
@@ -30,6 +32,38 @@ void main() {
   vec2 d = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
   vec2 w = mix(1.0 - a, a, d);
   v_f = w.x * w.y * a_xye.z * u_scale;
+  vec2 cell = i0 + d - u_rectOffset;
+  gl_Position = vec4((cell + 0.5) / u_size * 2.0 - 1.0, 0.0, 1.0);
+  gl_PointSize = 1.0;
+}`
+
+/**
+ * Thermal deposit (COD-258): as DEPOSIT_VS, but the energy is the sample's
+ * dose energy from the thermal step's per-sample texture, looked up by store
+ * index (u_first + instance, or the bin buffer's index attribute).
+ */
+export const DEPOSIT_THERMAL_VS = `#version 300 es
+precision highp int;
+layout(location = 0) in vec3 a_xye;
+layout(location = 1) in uint a_index;
+uniform highp sampler2D u_perSample;
+uniform bool u_binned;
+uniform int u_first;
+uniform vec2 u_origin;
+uniform float u_invPitch;
+uniform vec2 u_rectOffset;
+uniform vec2 u_size;
+uniform float u_scale;
+out float v_f;
+void main() {
+  int i = u_binned ? int(a_index) : u_first + gl_InstanceID;
+  float e = texelFetch(u_perSample, ivec2(i % ${PER_SAMPLE_WIDTH}, i / ${PER_SAMPLE_WIDTH}), 0).g;
+  vec2 f = (a_xye.xy - u_origin) * u_invPitch - 0.5;
+  vec2 i0 = floor(f);
+  vec2 a = f - i0;
+  vec2 d = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
+  vec2 w = mix(1.0 - a, a, d);
+  v_f = w.x * w.y * e * u_scale;
   vec2 cell = i0 + d - u_rectOffset;
   gl_Position = vec4((cell + 0.5) / u_size * 2.0 - 1.0, 0.0, 1.0);
   gl_PointSize = 1.0;
@@ -89,7 +123,11 @@ void main() {
   o = vec4(acc, 0.0, 0.0, 0.0);
 }`
 
-/** Response kinds → colour (sRGB8), depth (mm), verdict bucket. MRT. */
+/**
+ * Response kinds → colour (sRGB8), depth (mm), verdict bucket. MRT. With
+ * u_thermal the input is thermal dose and fire risk also reads the bulk map
+ * (thermal grid, K above ambient) at the cell centre.
+ */
 export const RESPONSE_FS = `#version 300 es
 precision highp float;
 precision highp int;
@@ -108,6 +146,15 @@ uniform float u_underBelow;
 uniform float u_overAbove;
 uniform float u_fireAt;
 uniform float u_untouchedFraction;
+uniform bool u_thermal;
+uniform highp sampler2D u_bulk;
+uniform vec2 u_cellOriginMm;
+uniform float u_pitchMm;
+uniform vec2 u_bulkOriginMm;
+uniform float u_bulkInvPitch;
+uniform ivec2 u_bulkSize;
+uniform float u_ambientK;
+uniform float u_fireK;
 layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_depth;
 layout(location = 2) out uvec4 o_verdict;
@@ -145,8 +192,13 @@ void main() {
   // Round like the CPU (Math.round of 255·v); the RGBA8 store truncates otherwise unpredictably.
   o_color = vec4(floor(labToSrgb(lab) * 255.0 + 0.5) / 255.0, 1.0);
   o_depth = vec4(f > u_depthThreshold ? (f - u_depthThreshold) * u_depthPerFluence : 0.0, 0.0, 0.0, 0.0);
+  bool hot = false;
+  if (u_thermal) {
+    ivec2 b = ivec2(floor((u_cellOriginMm + (vec2(p) + 0.5) * u_pitchMm - u_bulkOriginMm) * u_bulkInvPitch));
+    if (all(greaterThanEqual(b, ivec2(0))) && all(lessThan(b, u_bulkSize))) hot = u_ambientK + texelFetch(u_bulk, b, 0).r >= u_fireK;
+  }
   uint v = 0u;
-  if (f >= u_fireAt) v = 4u;
+  if (hot || f >= u_fireAt) v = 4u;
   else if (f > u_overAbove) v = 3u;
   else if (f >= u_underBelow) v = 2u;
   else if (f > u_untouchedFraction * u_underBelow) v = 1u;

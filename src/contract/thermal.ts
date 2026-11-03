@@ -47,15 +47,20 @@
 //     injected.
 //   - Layers: top thickness THERMAL_TOP_LAYER_PER_PITCH · pitch, each next one
 //     THERMAL_LAYER_RATIO times thicker.
-//   - Time bins of binS = max(THERMAL_BIN_S, duration ÷ THERMAL_MAX_BINS); sample
+//   - Time bins of binS = max(THERMAL_BIN_S, duration ÷ maxBins), where
+//     maxBins = min(THERMAL_MAX_BINS, THERMAL_MAX_CELL_BINS ÷ thermal cells) bounds
+//     the GPU work of very long jobs; sample
 //     i is in bin floor(t_i / binS). lagBins = max(1, round(THERMAL_NEAR_S / binS)).
-//     For bin k, in order: gather bin k; inject bin k − lagBins (absorbed
-//     energy, bilinear, split over the layers as a half-Gaussian of σ_z = √(2ατ));
-//     gather bin k again; diffuse by binS. Runs of empty bins diffuse as one step.
-//     A gather reads ΔT_bulk from the top layer with a Gaussian stencil of
-//     σ_g² = max(0, 2ατ − pitch²/6), so injected heat reads as if it had
-//     diffused laterally for τ, and the accumulated dose bilinearly (char level
-//     for absorption feedback). Each sample blends its two gathers by its
+//     For bin k, in order: gather bin k; inject bin k − lagBins; gather bin k
+//     again; diffuse by binS. Runs of empty bins diffuse as one step.
+//     Injection: absorbed energy, bilinear, split over the layers as a
+//     half-Gaussian of σ_z = √(2ατ), then spread laterally by
+//     gaussianTaps(injectSpreadCells2), variance (2ατ − pitch²/3) / pitch² (the
+//     bilinear inject and read each add pitch²/6), because heat injected at age τ
+//     has already diffused that far. Dose goes to the accumulated-dose grid,
+//     bilinear, unspread.
+//     A gather reads ΔT_bulk from the top layer and the accumulated dose (char
+//     level for absorption feedback), both bilinearly. Each sample blends its two gathers by its
 //     fraction f = t_i / binS − k through the bin: early samples should not yet
 //     see the lagged bin, late ones all of it (without this, slow moves bead at
 //     v · binS).
@@ -76,10 +81,12 @@ import { UNTOUCHED_FRACTION, Verdict } from './outputs.ts'
 export type PeakTemperatureModel = Extract<ThermalModel, { kind: 'peakTemperature' }>
 
 export const THERMAL_PITCH_MM = 0.1
-export const THERMAL_MAX_CELLS = 512 * 512
+export const THERMAL_MAX_CELLS = 256 * 256
 export const THERMAL_MARGIN_MM = 1
 export const THERMAL_BIN_S = 0.01
-export const THERMAL_MAX_BINS = 4096
+export const THERMAL_MAX_BINS = 1024
+/** Work budget: thermal cells × bins (each bin is two passes over the grid). */
+export const THERMAL_MAX_CELL_BINS = 2 ** 29
 export const THERMAL_NEAR_S = 0.02
 export const THERMAL_LAYERS = 4
 export const THERMAL_LAYER_RATIO = 4
@@ -108,8 +115,8 @@ export interface ThermalPlan {
   layerMm: number[]
   /** Fraction of injected energy per layer (sums to 1). */
   injectFraction: number[]
-  /** Gather stencil σ in thermal cells; below 0.5 the gather is bilinear. */
-  gatherSigmaCells: number
+  /** Lateral spread (variance, cells²) given to injected heat; 0 = none. */
+  injectSpreadCells2: number
 }
 
 export function planThermal(
@@ -127,7 +134,8 @@ export function planThermal(
   const originYMm = Math.floor((burnBounds.minYMm - m) / pitchMm) * pitchMm
   const width = Math.max(1, Math.ceil((burnBounds.maxXMm + m - originXMm) / pitchMm))
   const height = Math.max(1, Math.ceil((burnBounds.maxYMm + m - originYMm) / pitchMm))
-  const binS = options.binS ?? Math.max(THERMAL_BIN_S, durationS / THERMAL_MAX_BINS)
+  const maxBins = Math.max(1, Math.min(THERMAL_MAX_BINS, Math.floor(THERMAL_MAX_CELL_BINS / (width * height))))
+  const binS = options.binS ?? Math.max(THERMAL_BIN_S, durationS / maxBins)
   const lagBins = Math.max(1, Math.round((options.nearS ?? THERMAL_NEAR_S) / binS))
   const nearS = lagBins * binS
   const alpha = thermalDiffusivity(thermal)
@@ -141,7 +149,7 @@ export function planThermal(
     injectFraction.push(k === THERMAL_LAYERS - 1 ? 1 - erf(z / (Math.SQRT2 * sigmaZ)) : erf(z1 / (Math.SQRT2 * sigmaZ)) - erf(z / (Math.SQRT2 * sigmaZ)))
     z = z1
   }
-  const gather2 = Math.max(0, 2 * alpha * nearS - (pitchMm * pitchMm) / 6)
+  const gather2 = Math.max(0, (2 * alpha * nearS) / (pitchMm * pitchMm) - 1 / 3)
   return {
     grid: { originXMm, originYMm, pitchMm, width, height },
     binS,
@@ -151,7 +159,7 @@ export function planThermal(
     alphaMm2PerS: alpha,
     layerMm,
     injectFraction,
-    gatherSigmaCells: Math.sqrt(gather2) / pitchMm,
+    injectSpreadCells2: gather2,
   }
 }
 
@@ -166,7 +174,11 @@ export function erf(x: number): number {
 
 /** Lateral diffusion step: 1D taps of a Gaussian with variance 2α·dt (cells²), normalised. */
 export function diffusionTaps(alphaMm2PerS: number, dtS: number, pitchMm: number): Float32Array {
-  const v = (2 * alphaMm2PerS * dtS) / (pitchMm * pitchMm)
+  return gaussianTaps((2 * alphaMm2PerS * dtS) / (pitchMm * pitchMm))
+}
+
+/** 1D taps of a normalised Gaussian of variance v (cells²). */
+export function gaussianTaps(v: number): Float32Array {
   // Exact variance for small steps, where a sampled Gaussian would be too narrow.
   if (v <= 0.5) return Float32Array.of(v / 2, 1 - v, v / 2)
   const sigma = Math.sqrt(v)

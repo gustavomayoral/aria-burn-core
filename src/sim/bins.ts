@@ -15,6 +15,8 @@ export class SampleBins {
   /** Samples in bucket order: interleaved [x, y, energyJ], as in SampleStore.xye. */
   readonly xye: Float32Array
   readonly tS: Float64Array
+  /** Store index of each binned sample (per-sample thermal energies are looked up by it, COD-258). */
+  readonly index: Uint32Array
   /** Bucket b holds [start[b], start[b + 1]). */
   readonly start: Uint32Array
   readonly bx0: number
@@ -49,8 +51,10 @@ export class SampleBins {
     const fill = start.slice()
     this.xye = new Float32Array(n * 3)
     this.tS = new Float64Array(n)
+    this.index = new Uint32Array(n)
     for (let s = 0; s < n; s++) {
       const d = fill[bucketOf[s]!]!++
+      this.index[d] = s
       this.xye[d * 3] = src[s * 3]!
       this.xye[d * 3 + 1] = src[s * 3 + 1]!
       this.xye[d * 3 + 2] = src[s * 3 + 2]!

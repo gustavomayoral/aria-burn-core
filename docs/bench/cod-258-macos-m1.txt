@@ -1,0 +1,53 @@
+COD-258 thermal-step benchmark — `pnpm bench`, button "Thermal step (COD-258)", run 2026-11-02
+on this Mac in the Claude desktop app's Chromium (ANGLE/Metal, Apple M1), with the browser
+pane hidden (background page). NOT the Tauri WKWebView and NOT Windows/Iris Xe.
+
+user agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/4.4212.0 Chrome/152.0.7977.167 Safari/537.36
+gl renderer: ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)
+
+== Thermal step (COD-258): GPU vs CPU reference ==
+samples 47,614 · job 8.9 s · thermal grid 90 × 90 @ 0.100 mm · bins 890 × 10.0 ms (lag 2) · active 848
+CPU reference 1781.6 ms · GPU 416.2 ms (incl. readback)
+  per-sample eAbs max rel Δ 2.23e-4 · dose weight max |Δ| 1.99e-4 · bulk map max |Δ| 195.149 K of 4945 K, cells off by > 1 %: 229 / 8100
+  energy: Σ eAbs 1.46634e+1 J (CPU grid holds 1.46634e+1 J)
+  pipeline GPU vs CPU (dose):  max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  pipeline GPU tiled vs CPU:   max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU dose, untiled expected 1.0907e+1 J
+    after deposit 1.0907e+1 (1.0000) PASS
+    after blur H  1.0907e+1 (1.0000) PASS
+    after blur V  1.0907e+1 (1.0000) PASS
+
+(Bulk-map cells that differ: a sample on a thermal-cell edge lands in either cell, f32 on the
+GPU vs f64 on the CPU, so the per-cell maximum moves to the neighbour. Per-sample values agree.)
+
+== Cost: spike job, σ 0.05 mm, 100 × 100 mm raster ==
+samples 5,905,951 · job 1121 s · grid 6010 × 6020 · tiles 1
+thermal grid 254 × 255 @ 0.402 mm · bins 1024 × 1095 ms (lag 1) · active 1025
+thermal step (once per job/material, incl. statics and readback): min 2069.6 ms / median 2087.5 ms / max 3165.1 ms
+  last run: CPU statics 1404.4 ms · GPU bin loop 555.1 ms · readback + bulk map 110.1 ms
+full-res: fluence only min 100.7 ms / median 101.5 ms / max 105.9 ms · thermal, first (uploads bulk map) 2133.5 ms · warm min 101.2 ms / median 102.8 ms / max 110.7 ms
+coarse scrub with thermal: min 3.3 ms / median 4.5 ms / max 43.3 ms
+  full-res dose expected 1.8309e+3 J
+    after deposit 1.8309e+3 (1.0000) PASS
+    after blur H  1.8309e+3 (1.0000) PASS
+    after blur V  1.8309e+3 (1.0000) PASS
+
+== Cost: provisional diode, 5 µm pitch, 100 × 100 mm raster ==
+samples 19,688,836 · job 1121 s · grid 20012 × 20040 · tiles 9
+thermal grid 254 × 255 @ 0.402 mm · bins 1024 × 1095 ms (lag 1) · active 1025
+thermal step (once per job/material, incl. statics and readback): min 1999.6 ms / median 2030.5 ms / max 2167.8 ms
+  last run: CPU statics 950.2 ms · GPU bin loop 922.9 ms · readback + bulk map 126.5 ms
+full-res: fluence only min 1315.1 ms / median 1316.0 ms / max 1323.5 ms · thermal, first (uploads bulk map) 3712.9 ms · warm min 1231.8 ms / median 1268.6 ms / max 1338.5 ms
+coarse scrub with thermal: min 3.8 ms / median 13.1 ms / max 224.8 ms
+  full-res dose expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+gl error: 0
+
+Tuning history on the spike job (thermal step only, same machine):
+  first GPU port, 512² thermal grid, 2076 bins, per-sample readback          3.3 s (statics 2.4 s)
+  memoised statics, GPU bulk map, lazy per-sample readback                   1.8 s
+  bulk-map stencil → smoothing the whole top layer per gather                2.9 s (fill-bound)
+  spread only the fresh heat, scissored                                      2.1 s
+  budgets 256² cells, 1024 bins (shipped)                                    2.0 s (loop 0.55 s; statics vary 0.25–1.4 s with GC)

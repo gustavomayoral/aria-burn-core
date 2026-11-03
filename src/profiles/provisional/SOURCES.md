@@ -126,9 +126,9 @@ Turning the spread into thresholds (the same rule for all three materials):
 | `baseColor` / `markColor` | L 20 / L 82 | Rough guide from test-grid photos |
 | `fireRisk` | none | Metal substrate |
 
-## 3. Thermal constants (for COD-258)
+## 3. Thermal constants (COD-258)
 
-The profiles ship `thermal: { kind: "none" }`, as the contract requires for v1. When COD-258 adds the `peakTemperature` model, these are the values to fill in (contract units: W/(mm·K), J/(mm³·K), K).
+Wood and acrylic use the `peakTemperature` thermal model (`src/contract/thermal.ts`) with the values below (contract units: W/(mm·K), J/(mm³·K), K). Anodized aluminium stays `none`: its heat path is a thin oxide on an aluminium heat sink, which one conductivity can't describe, and it builds up little heat. Its response stays fluence-driven.
 
 | Material | k (W/m·K) | ρ (kg/m³) | c (J/kg·K) | → `conductivityWPerMmK` | → `volumetricHeatCapacityJPerMm3K` | α (mm²/s) | Source |
 |---|---|---|---|---|---|---|---|
@@ -147,6 +147,20 @@ The profiles ship `thermal: { kind: "none" }`, as the contract requires for v1. 
 | PMMA glass transition | 105 °C (atactic) – 110 °C | NETZSCH, MakeItFrom |
 | PMMA decomposition | 360–390 °C | NETZSCH |
 
+### 3a. Thermal-model fields
+
+| Field | Birch ply | Black cast acrylic | Reasoning |
+|---|---|---|---|
+| `conductivityWPerMmK` | 1.6e-4 | 1.9e-4 | Table above |
+| `volumetricHeatCapacityJPerMm3K` | 1.09e-3 | 1.75e-3 | ρ·c, table above |
+| `ambientK` | 293 | 293 | Room temperature |
+| `rampOnsetK` | 523 | 633 | Peak surface temperature where the ramp starts (toneStart / frostStart) on a cold pass at the reference speed. Wood: char onset, 250 °C. Acrylic: decomposition onset, 360 °C (frosting is surface foaming from monomer release). It only sets the flash term's scale: `(rampOnsetK − ambient) ÷ rampStart` K per J/mm². Real flashes are limited by pyrolysis and ablation, so this is a calibration point, not a measured flash temperature. |
+| `referenceSpeedMmPerS` | 100 | 83 | Median speed of the published settings rows in §2 (wood: 100; acrylic: the mean of the middle two, 66.7 and 100). At this speed along X, dose = fluence for a cold pass, so the fluence thresholds keep their meaning. |
+| `absorptionAtFullChar` | 0.9 | — | Char at L\* ≈ 28 reflects about 5–10 % in the blue (same reasoning as `absorption`). Char only. |
+| `fireRisk.thresholdK` | 873 | 733 | Compared with the **bulk** temperature (heat older than 20 ms at thermal-grid scale), not the flash. Wood: about 600 °C, the high end of surface temperatures at ignition under high heat flux (Babrauskas 2002 reports 250–365 °C for long, low-flux exposures and higher values as flux rises; not re-checked in this pass). With 573 K (300 °C), normal small engraving fills already flag, because the linear model has no pyrolysis sink. Acrylic: PMMA autoignition, about 450–460 °C (commonly cited; not re-checked in this pass). |
+
+**Effect on the fluence thresholds.** At the reference speed and on cold material, dose equals fluence. Fills preheat themselves, so a typical published fill setting now reads about 1.3–2× its fluence as dose (wood, 100 mm/s, 0.1 mm interval, small fills). Slower settings read lower (√v for fast passes). The §2 thresholds were fitted as fluence, so COD-254 should refit them as dose: the thermal model changes what the thresholds mean, not the code.
+
 ## 4. Known uncertainty: what COD-254 should check first
 
 1. **Spot size and its effect on grid pitch** (most likely wrong, and the most consequential). The long axis (0.12 mm) is a midpoint between the vendor spec and forum estimates. The short axis sets the grid pitch (0.005 mm) and so a tile size of 45 mm. Measure it with LightBurn's interval test on anodized aluminium (forum method) before tuning anything else. Separately, it may be worth deriving the pitch from the full kernel σ (spot ⊕ heat) instead of the spot alone. That is a COD-264 decision, not a parameter change.
@@ -156,4 +170,8 @@ The profiles ship `thermal: { kind: "none" }`, as the contract requires for v1. 
 5. **Acrylic removal and over-burn.** Black acrylic always loses a little material when frosted. Setting the removal threshold at max × 1.3 means the depth map stays at zero for typical engraves.
 6. **Colours.** Only birch `baseColor` comes from a CIELab measurement. Char, frost and mark colours are read from photos.
 7. **Power curve.** The dead zone and knee are generic. Measure optical power at S = 5, 10, 20, 50 and 100 % with a power meter.
-8. **Wood absorption 0.6** is inferred from colour, not measured. It scales all wood thresholds together, so it does not change predictions as long as it stays constant (v1 has no char feedback).
+8. **Wood absorption 0.6** is inferred from colour, not measured. It scales all wood thresholds together. With char feedback (COD-258) the ratio to `absorptionAtFullChar` now matters too.
+9. **Thermal model (COD-258).** Check these, in order:
+   - whether equal-fluence pairs differ as much as the √v flash factor predicts;
+   - the fire thresholds against real flame-ups (small dense fills, slow vector lines);
+   - `rampOnsetK`, which only sets a scale and could equally be fitted as a number of K per J/mm².

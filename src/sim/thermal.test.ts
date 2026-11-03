@@ -313,6 +313,7 @@ describe('convergence', () => {
 describe('the thermal step is swappable (Option A fallback seam)', () => {
   /** A stand-in empirical speed correction: dose = fluence · √(v / 100), no grid. */
   const speedCorrection: ThermalStep = {
+    id: 'test-speed-correction',
     run(store, _machine, material): ThermalResult {
       const n = store.count
       const eAbs = new Float32Array(n)

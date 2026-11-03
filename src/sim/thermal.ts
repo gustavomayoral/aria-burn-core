@@ -15,6 +15,7 @@ import {
   flashKPerJPerMm2,
   flashSpeedFactor,
   flashTable,
+  gaussianTaps,
   mirrorIndex,
   planThermal,
   sigmaAcross,
@@ -48,6 +49,11 @@ export interface ThermalResult {
 }
 
 export interface ThermalStep {
+  /**
+   * Steps with the same id compute the same model (the CPU reference and the
+   * WebGL2 port of peakTemperature), so they share one cached result.
+   */
+  readonly id: string
   run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma): ThermalResult
 }
 
@@ -82,16 +88,6 @@ export function thermalPlanFor(store: SampleStore, thermal: PeakTemperatureModel
   return planThermal(b, last, store.sampledUntilS, thermal, options)
 }
 
-/** Motion direction of sample i from its neighbours in the same continuous run (rad). */
-function directionAt(store: SampleStore, i: number): number {
-  const { xye, tS, dtS, count } = store
-  const joined = (a: number, b: number) => tS[b]! - tS[a]! <= (dtS[a]! + dtS[b]!) * 0.51 + 1e-9
-  const lo = i > 0 && joined(i - 1, i) ? i - 1 : i
-  const hi = i + 1 < count && joined(i, i + 1) ? i + 1 : i
-  if (lo === hi) return 0
-  return Math.atan2(xye[hi * 3 + 1]! - xye[lo * 3 + 1]!, xye[hi * 3]! - xye[lo * 3]!)
-}
-
 export function thermalStatics(
   store: SampleStore,
   plan: ThermalPlan,
@@ -100,16 +96,46 @@ export function thermalStatics(
   thermal: PeakTemperatureModel,
 ): ThermalStatics {
   const n = store.count
+  const { xye, tS, dtS, speedMmPerS } = store
   const flash = new Float32Array(n)
   const bulkGain = new Float32Array(n)
   const flashK = flashKPerJPerMm2(material, thermal)
   const root2pi = Math.sqrt(2 * Math.PI)
+  // Consecutive samples of a move share speed and direction, so the table
+  // lookup and σ⊥ are memoised on (speed, unit direction).
+  let lastV = NaN
+  let lastUx = NaN
+  let lastUy = NaN
+  let lastFlash = 0
+  let lastSigma = 0
   for (let i = 0; i < n; i++) {
-    const v = Math.max(store.speedMmPerS[i]!, THERMAL_MIN_SPEED_MM_PER_S)
-    const phi = directionAt(store, i)
-    flash[i] = flashSpeedFactor(table, v, phi)
-    const p = store.xye[i * 3 + 2]! / Math.max(store.dtS[i]!, 1e-12)
-    bulkGain[i] = p > 0 ? (v * root2pi * sigmaAcross(table.kernelCov, phi)) / (flashK * p) : 0
+    const v = Math.max(speedMmPerS[i]!, THERMAL_MIN_SPEED_MM_PER_S)
+    // Direction from the neighbours in the same continuous run (no beam-off gap between them).
+    const lo = i > 0 && tS[i]! - tS[i - 1]! <= (dtS[i - 1]! + dtS[i]!) * 0.51 + 1e-9 ? i - 1 : i
+    const hi = i + 1 < n && tS[i + 1]! - tS[i]! <= (dtS[i]! + dtS[i + 1]!) * 0.51 + 1e-9 ? i + 1 : i
+    let ux = 1
+    let uy = 0
+    if (lo !== hi) {
+      const dx = xye[hi * 3]! - xye[lo * 3]!
+      const dy = xye[hi * 3 + 1]! - xye[lo * 3 + 1]!
+      const len = Math.sqrt(dx * dx + dy * dy)
+      if (len > 0) {
+        ux = dx / len
+        uy = dy / len
+      }
+    }
+    // f32 positions make the neighbour direction jitter by ~1e-3 on short steps; the table is 15° per row.
+    if (v !== lastV || Math.abs(ux - lastUx) > 2e-3 || Math.abs(uy - lastUy) > 2e-3) {
+      const phi = Math.atan2(uy, ux)
+      lastFlash = flashSpeedFactor(table, v, phi)
+      lastSigma = sigmaAcross(table.kernelCov, phi)
+      lastV = v
+      lastUx = ux
+      lastUy = uy
+    }
+    flash[i] = lastFlash
+    const p = xye[i * 3 + 2]! / Math.max(dtS[i]!, 1e-12)
+    bulkGain[i] = p > 0 ? (v * root2pi * lastSigma) / (flashK * p) : 0
   }
   const binStart = new Uint32Array(plan.binCount + 1)
   let s = 0
@@ -128,30 +154,6 @@ export function absorptionAt(material: MaterialProfile, thermal: PeakTemperature
   return full === undefined ? material.absorption : material.absorption + (full - material.absorption) * charT
 }
 
-/** 1D gather weights along one axis at continuous cell coordinate f (cell centres at integers). */
-function gatherAxis(f: number, sigma: number, n: number, idx: Int32Array, w: Float64Array): number {
-  if (sigma < 0.5) {
-    const i0 = Math.floor(f)
-    const a = f - i0
-    idx[0] = mirrorIndex(i0, n)
-    idx[1] = mirrorIndex(i0 + 1, n)
-    w[0] = 1 - a
-    w[1] = a
-    return 2
-  }
-  const r = Math.ceil(3 * sigma)
-  const base = Math.floor(f)
-  let sum = 0
-  let m = 0
-  for (let j = base - r + 1; j <= base + r; j++, m++) {
-    const d = f - j
-    idx[m] = mirrorIndex(j, n)
-    sum += w[m] = Math.exp(-(d * d) / (2 * sigma * sigma))
-  }
-  for (let k = 0; k < m; k++) w[k] = w[k]! / sum
-  return m
-}
-
 /** The peakTemperature thermal grid, stepped bin by bin on the CPU. */
 export class CpuThermalGrid {
   readonly cells: number
@@ -160,6 +162,9 @@ export class CpuThermalGrid {
   /** Accumulated dose (J/mm²), no diffusion: the char level for absorption feedback. */
   readonly doseAcc: Float32Array
   readonly bulkK: Float32Array
+  /** Heat injected in the current bin, before its lateral spread (land). */
+  private readonly fresh: Float32Array
+  private freshPending = false
   private readonly scratch: Float32Array
   injectedJ = 0
   private pendingS = 0
@@ -175,6 +180,7 @@ export class CpuThermalGrid {
     this.doseAcc = new Float32Array(this.cells)
     this.bulkK = new Float32Array(this.cells)
     this.scratch = new Float32Array(this.cells)
+    this.fresh = new Float32Array(plan.layerMm.length * this.cells)
   }
 
   /** Σ ρc · ΔT · volume over every layer and cell (J). */
@@ -208,38 +214,46 @@ export class CpuThermalGrid {
         const w = (dx ? ax : 1 - ax) * wy
         const c = y * width + x
         for (let k = 0; k < layerMm.length; k++)
-          this.state[k * this.cells + c]! += (w * eAbsJ * injectFraction[k]!) / (this.heatCapacityJPerMm3K * area * layerMm[k]!)
+          this.fresh[k * this.cells + c]! += (w * eAbsJ * injectFraction[k]!) / (this.heatCapacityJPerMm3K * area * layerMm[k]!)
         this.doseAcc[c]! += (w * eDoseJ) / area
       }
     }
     this.injectedJ += eAbsJ
     this.live = true
+    this.freshPending = true
   }
 
-  private readonly gx = new Int32Array(64)
-  private readonly gy = new Int32Array(64)
-  private readonly wx = new Float64Array(64)
-  private readonly wy = new Float64Array(64)
+  /** Spread the heat injected since the last call laterally (injectSpreadCells2) and add it to the state. */
+  land(): void {
+    if (!this.freshPending) return
+    const { width, height } = this.plan.grid
+    const taps = gaussianTaps(this.plan.injectSpreadCells2)
+    for (let k = 0; k < this.plan.layerMm.length; k++) {
+      const layer = this.fresh.subarray(k * this.cells, (k + 1) * this.cells)
+      lateralBlur(layer, layer, this.scratch, width, height, taps)
+      const off = k * this.cells
+      for (let c = 0; c < this.cells; c++) this.state[off + c]! += layer[c]!
+      layer.fill(0)
+    }
+    this.freshPending = false
+  }
 
-  /** Top-layer excess temperature with the plan's gather stencil, and bilinear accumulated dose. */
+  /** Bulk excess temperature from the top layer and accumulated dose, both bilinear (mirror / clamped edges). */
   gather(xMm: number, yMm: number): { bulkK: number; doseAcc: number } {
-    const { grid, gatherSigmaCells } = this.plan
+    const { grid } = this.plan
     const { width, height, pitchMm } = grid
+    const top = this.state
     const fx = (xMm - grid.originXMm) / pitchMm - 0.5
     const fy = (yMm - grid.originYMm) / pitchMm - 0.5
-    const nx = gatherAxis(fx, gatherSigmaCells, width, this.gx, this.wx)
-    const ny = gatherAxis(fy, gatherSigmaCells, height, this.gy, this.wy)
-    let t = 0
-    for (let j = 0; j < ny; j++) {
-      const row = this.gy[j]! * width
-      let acc = 0
-      for (let i = 0; i < nx; i++) acc += this.state[row + this.gx[i]!]! * this.wx[i]!
-      t += acc * this.wy[j]!
-    }
     const ix = Math.floor(fx)
     const iy = Math.floor(fy)
     const ax = fx - ix
     const ay = fy - iy
+    const x0 = mirrorIndex(ix, width)
+    const x1 = mirrorIndex(ix + 1, width)
+    const y0 = mirrorIndex(iy, height) * width
+    const y1 = mirrorIndex(iy + 1, height) * width
+    const t = (top[y0 + x0]! * (1 - ax) + top[y0 + x1]! * ax) * (1 - ay) + (top[y1 + x0]! * (1 - ax) + top[y1 + x1]! * ax) * ay
     const at = (x: number, y: number) => this.doseAcc[Math.min(height - 1, Math.max(0, y)) * width + Math.min(width - 1, Math.max(0, x))]!
     const dose = (at(ix, iy) * (1 - ax) + at(ix + 1, iy) * ax) * (1 - ay) + (at(ix, iy + 1) * (1 - ax) + at(ix + 1, iy + 1) * ax) * ay
     return { bulkK: t, doseAcc: dose }
@@ -267,24 +281,9 @@ export class CpuThermalGrid {
     const { grid, layerMm, alphaMm2PerS } = this.plan
     const { width, height } = grid
     const taps = diffusionTaps(alphaMm2PerS, dt, grid.pitchMm)
-    const r = (taps.length - 1) / 2
-    const tmp = this.scratch
-    // Mirror lookups only within r of an edge; the interior reads directly.
-    const pass = (src: Float32Array, dst: Float32Array, along: number, across: number, step: number, stride: number) => {
-      for (let j = 0; j < across; j++) {
-        const row = j * stride
-        for (let i = 0; i < along; i++) {
-          let acc = 0
-          if (i >= r && i < along - r) for (let t = -r; t <= r; t++) acc += src[row + (i + t) * step]! * taps[t + r]!
-          else for (let t = -r; t <= r; t++) acc += src[row + mirrorIndex(i + t, along) * step]! * taps[t + r]!
-          dst[row + i * step] = acc
-        }
-      }
-    }
     for (let k = 0; k < layerMm.length; k++) {
       const layer = this.state.subarray(k * this.cells, (k + 1) * this.cells)
-      pass(layer, tmp, width, height, 1, width)
-      pass(tmp, layer, height, width, width, 1)
+      lateralBlur(layer, layer, this.scratch, width, height, taps)
     }
     const solver = depthSolver(layerMm, alphaMm2PerS, dt)
     const col = new Float64Array(layerMm.length)
@@ -294,6 +293,25 @@ export class CpuThermalGrid {
       for (let k = 0; k < layerMm.length; k++) this.state[k * this.cells + c] = col[k]!
     }
   }
+}
+
+/** Separable blur with mirror edges: src → tmp along X, tmp → dst along Y (dst may be src). */
+function lateralBlur(src: Float32Array, dst: Float32Array, tmp: Float32Array, width: number, height: number, taps: Float32Array): void {
+  const r = (taps.length - 1) / 2
+  // Mirror lookups only within r of an edge; the interior reads directly.
+  const pass = (from: Float32Array, to: Float32Array, along: number, across: number, step: number, stride: number) => {
+    for (let j = 0; j < across; j++) {
+      const row = j * stride
+      for (let i = 0; i < along; i++) {
+        let acc = 0
+        if (i >= r && i < along - r) for (let t = -r; t <= r; t++) acc += from[row + (i + t) * step]! * taps[t + r]!
+        else for (let t = -r; t <= r; t++) acc += from[row + mirrorIndex(i + t, along) * step]! * taps[t + r]!
+        to[row + i * step] = acc
+      }
+    }
+  }
+  pass(src, tmp, width, height, 1, width)
+  pass(tmp, dst, height, width, width, 1)
 }
 
 /**
@@ -330,7 +348,10 @@ export interface CpuThermalRun extends ThermalResult {
 
 /** The peakTemperature step on the CPU (Option B reference). */
 export class CpuPeakTemperatureStep implements ThermalStep {
-  constructor(readonly options: ThermalPlanOptions = {}) {}
+  readonly id: string
+  constructor(readonly options: ThermalPlanOptions = {}) {
+    this.id = `peakTemperature/${options.pitchMm ?? ''}/${options.binS ?? ''}/${options.nearS ?? ''}`
+  }
 
   run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma): CpuThermalRun {
     const thermal = peakTemperatureModel(material)
@@ -362,6 +383,7 @@ export class CpuPeakTemperatureStep implements ThermalStep {
         preDose[i - gatFrom] = g.doseAcc
       }
       for (let i = injFrom; i < injTo; i++) grid.inject(xye[i * 3]!, xye[i * 3 + 1]!, eAbs[i]!, eDose[i]!)
+      grid.land()
       for (let i = gatFrom; i < gatTo; i++) {
         const x = xye[i * 3]!
         const y = xye[i * 3 + 1]!
@@ -406,6 +428,11 @@ export function bulkAt(result: ThermalResult, xMm: number, yMm: number): number 
 
 const resultCache = new WeakMap<SampleStore, { key: unknown[]; result: ThermalResult }>()
 
+/** Seed the cache with a result computed elsewhere (the GPU step), so the readout reuses it. */
+export function cacheThermal(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, stepId: string, result: ThermalResult): void {
+  resultCache.set(store, { key: [store.version, machine, material, kernel.sigmaUMm, kernel.sigmaVMm, kernel.angleDeg, stepId], result })
+}
+
 /**
  * The thermal result for a store and material, cached per store version, so
  * every tile, the coarse scrub and the hover readout share one run.
@@ -419,7 +446,7 @@ export function thermalFor(
 ): ThermalResult | null {
   // A material without a thermal model drives the response from fluence, whatever the step.
   if (!peakTemperatureModel(material)) return null
-  const key = [store.version, machine, material, kernel.sigmaUMm, kernel.sigmaVMm, kernel.angleDeg, step]
+  const key = [store.version, machine, material, kernel.sigmaUMm, kernel.sigmaVMm, kernel.angleDeg, step.id]
   const hit = resultCache.get(store)
   if (hit && hit.key.length === key.length && hit.key.every((v, i) => v === key[i])) return hit.result
   const result = step.run(store, machine, material, kernel)

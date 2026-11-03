@@ -6,6 +6,11 @@
 //
 // Requires EXT_color_buffer_float (R32F render targets). Without
 // EXT_float_blend the deposit runs on the CPU (cpu.ts) and is uploaded.
+//
+// With a thermal model (COD-258) the thermal step runs first (gl-thermal.ts,
+// or the CPU reference without EXT_float_blend) and the pipeline deposits
+// each sample's dose energy instead: the R32F targets then hold thermal dose,
+// and the response reads the bulk-temperature map for fire risk.
 
 import type { CellRect, Tile } from '../../contract/index.ts'
 import { UNTOUCHED_FRACTION, verdictThresholds } from '../../contract/index.ts'
@@ -15,9 +20,14 @@ import type { Kernel1D, SkewTaps } from '../kernel.ts'
 import { responseParams } from '../response.ts'
 import { SampleBins } from '../bins.ts'
 import type { SampleStore } from '../sample-store.ts'
+import { defaultThermalStep, peakTemperatureModel, thermalFor, type ThermalResult } from '../thermal.ts'
+import { GlPeakTemperatureStep } from './gl-thermal.ts'
+import { PER_SAMPLE_WIDTH } from './thermal-shaders.ts'
+import { Program, framebuffer, target, texture, type Target } from './gl-util.ts'
 import {
   BLUR_FS,
   DEPOSIT_FS,
+  DEPOSIT_THERMAL_VS,
   DEPOSIT_VS,
   FULLSCREEN_VS,
   OVERVIEW_FS,
@@ -55,15 +65,22 @@ export interface GlRunResult {
   tileCount: number
   /** Per-stage wall time summed over tiles (ms); only with syncStages. */
   stageMs: Partial<Record<GlStage, number>>
+  /** With a thermal model these are dose energies (J): Σ eDose expected, dose after each stage. */
   energy: StageEnergy | null
   cpuDeposit: boolean
+  /** The thermal step's result when the material has a thermal model, else null. */
+  thermal: ThermalResult | null
 }
 
 /** A finished tile's GPU outputs, valid only inside onTile. */
 export interface GlTileView {
   tile: Tile
   setup: SimSetup
-  /** Blurred fluence (R32F), colour (RGBA8), depth (R32F), verdict (R8UI); padded-rect sized. */
+  /** What `fluence` holds: fluence, or thermal dose with a thermal model (COD-258). */
+  quantity: 'fluence' | 'dose'
+  /** The thermal result (peak temperature = ambient + flashK · dose, bulk map), or null. */
+  thermal: ThermalResult | null
+  /** Blurred fluence or dose (R32F), colour (RGBA8), depth (R32F), verdict (R8UI); padded-rect sized. */
   fluence: WebGLTexture
   color: WebGLTexture
   depth: WebGLTexture
@@ -81,82 +98,6 @@ const BIN_CELLS = 512
 /** Coarse checkpoints: at most this many, at least this many samples apart. */
 const CHECKPOINT_MAX = 16
 const CHECKPOINT_MIN_SPACING = 1 << 16
-
-function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
-  const s = gl.createShader(type)!
-  gl.shaderSource(s, src)
-  gl.compileShader(s)
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(`shader compile: ${gl.getShaderInfoLog(s)}`)
-  return s
-}
-
-class Program {
-  readonly program: WebGLProgram
-  private readonly locs = new Map<string, WebGLUniformLocation | null>()
-  constructor(
-    private readonly gl: WebGL2RenderingContext,
-    vs: string,
-    fs: string,
-  ) {
-    const p = gl.createProgram()!
-    gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vs))
-    gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs))
-    gl.linkProgram(p)
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`program link: ${gl.getProgramInfoLog(p)}`)
-    this.program = p
-  }
-  use(): this {
-    this.gl.useProgram(this.program)
-    return this
-  }
-  loc(name: string): WebGLUniformLocation | null {
-    if (!this.locs.has(name)) this.locs.set(name, this.gl.getUniformLocation(this.program, name))
-    return this.locs.get(name)!
-  }
-  f(name: string, ...v: number[]): this {
-    const l = this.loc(name)
-    if (v.length === 1) this.gl.uniform1f(l, v[0]!)
-    else if (v.length === 2) this.gl.uniform2f(l, v[0]!, v[1]!)
-    else this.gl.uniform3f(l, v[0]!, v[1]!, v[2]!)
-    return this
-  }
-  i(name: string, ...v: number[]): this {
-    const l = this.loc(name)
-    if (v.length === 1) this.gl.uniform1i(l, v[0]!)
-    else this.gl.uniform2i(l, v[0]!, v[1]!)
-    return this
-  }
-}
-
-interface Target {
-  tex: WebGLTexture
-  fbo: WebGLFramebuffer
-}
-
-function texture(gl: WebGL2RenderingContext, internal: number, w: number, h: number): WebGLTexture {
-  const t = gl.createTexture()!
-  gl.bindTexture(gl.TEXTURE_2D, t)
-  gl.texStorage2D(gl.TEXTURE_2D, 1, internal, w, h)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-  return t
-}
-
-function framebuffer(gl: WebGL2RenderingContext, ...attachments: WebGLTexture[]): WebGLFramebuffer {
-  const fbo = gl.createFramebuffer()!
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
-  attachments.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0))
-  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER)
-  if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error(`framebuffer incomplete: 0x${status.toString(16)}`)
-  return fbo
-}
-
-function target(gl: WebGL2RenderingContext, internal: number, w: number, h: number): Target {
-  const tex = texture(gl, internal, w, h)
-  return { tex, fbo: framebuffer(gl, tex) }
-}
 
 /** Render targets for one tile size. */
 class TargetSet {
@@ -265,6 +206,7 @@ export class GlOverview {
 export class GlSim {
   readonly caps: GlCaps
   private readonly deposit: Program
+  private readonly depositThermal: Program
   private readonly blur: Program
   private readonly skewBlur: Program
   private readonly response: Program
@@ -286,6 +228,20 @@ export class GlSim {
   private binStore: SampleStore | null = null
   private readonly binBuffer: WebGLBuffer
   private checkpoints: { key: string; store: SampleStore; spacing: number; targets: Target[] } | null = null
+  private readonly binIndexBuffer: WebGLBuffer
+  /** The GPU thermal step; null without EXT_float_blend (the CPU reference runs instead). */
+  readonly thermalStep: GlPeakTemperatureStep | null
+  private thermalState: {
+    result: ThermalResult
+    id: number
+    perSample: WebGLTexture
+    ownsPerSample: boolean
+    bulk: WebGLTexture | null
+    ownsBulk: boolean
+  } | null = null
+  private thermalIds = 0
+  /** Thermal state of the run in progress; deposits read dose energies when set. */
+  private active: NonNullable<GlSim['thermalState']> | null = null
 
   /** `forceCpuDeposit` exercises the no-EXT_float_blend fallback on hardware that has it. */
   constructor(
@@ -304,6 +260,7 @@ export class GlSim {
       timerQuery: !!gl.getExtension('EXT_disjoint_timer_query_webgl2'),
     }
     this.deposit = new Program(gl, DEPOSIT_VS, DEPOSIT_FS)
+    this.depositThermal = new Program(gl, DEPOSIT_THERMAL_VS, DEPOSIT_FS)
     this.blur = new Program(gl, FULLSCREEN_VS, BLUR_FS)
     this.skewBlur = new Program(gl, FULLSCREEN_VS, SKEW_BLUR_FS)
     this.response = new Program(gl, FULLSCREEN_VS, RESPONSE_FS)
@@ -313,12 +270,71 @@ export class GlSim {
     this.sampleVao = gl.createVertexArray()!
     this.sampleBuffer = gl.createBuffer()!
     this.binBuffer = gl.createBuffer()!
+    this.binIndexBuffer = gl.createBuffer()!
     gl.bindVertexArray(this.sampleVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleBuffer)
     gl.enableVertexAttribArray(0)
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0)
     gl.vertexAttribDivisor(0, 1)
     gl.bindVertexArray(null)
+    // The thermal deposit's index attribute is an integer; its generic value must be one too.
+    gl.vertexAttribI4ui(1, 0, 0, 0, 0)
+    this.thermalStep = floatBlend ? new GlPeakTemperatureStep(gl, () => this.sampleBuffer) : null
+  }
+
+  /**
+   * The thermal result for this store and setup (null without a thermal model),
+   * with its per-sample energies and bulk map as textures. The result is
+   * shared with the hover readout through the thermalFor cache.
+   */
+  thermal(store: SampleStore, setup: SimSetup): ThermalResult | null {
+    return this.thermalTextures(store, setup)?.result ?? null
+  }
+
+  private thermalTextures(store: SampleStore, setup: SimSetup): NonNullable<GlSim['thermalState']> | null {
+    if (!peakTemperatureModel(setup.material)) return null
+    const gl = this.gl
+    this.syncSamples(store)
+    const step = setup.thermalStep ?? this.thermalStep ?? defaultThermalStep
+    const result = thermalFor(store, setup.machine, setup.material, setup.thermalKernel, step)!
+    const t = this.thermalState
+    // Textures borrowed from the GPU step die with its next run.
+    if (t?.result === result && (t.ownsPerSample || this.thermalStep?.current === result)) return t
+    this.dropThermal()
+    let perSample: WebGLTexture
+    let ownsPerSample = false
+    if (this.thermalStep && this.thermalStep.current === result) perSample = this.thermalStep.current.perSample
+    else {
+      // A CPU (or other) step's result: upload its energies in the GPU step's layout.
+      const rows = Math.max(1, Math.ceil(result.count / PER_SAMPLE_WIDTH))
+      const texels = new Float32Array(PER_SAMPLE_WIDTH * rows * 2)
+      for (let i = 0; i < result.count; i++) {
+        texels[i * 2] = result.eAbs[i]!
+        texels[i * 2 + 1] = result.eDose[i]!
+      }
+      perSample = texture(gl, gl.RG32F, PER_SAMPLE_WIDTH, rows)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, PER_SAMPLE_WIDTH, rows, gl.RG, gl.FLOAT, texels)
+      ownsPerSample = true
+    }
+    let bulk: WebGLTexture | null = null
+    let ownsBulk = false
+    if (perSample === this.thermalStep?.current?.perSample) bulk = this.thermalStep.current.bulk
+    else if (result.bulkK && result.plan) {
+      ownsBulk = true
+      const { width, height } = result.plan.grid
+      bulk = texture(gl, gl.R32F, width, height)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, result.bulkK)
+    }
+    this.thermalState = { result, id: ++this.thermalIds, perSample, ownsPerSample, bulk, ownsBulk }
+    return this.thermalState
+  }
+
+  private dropThermal(): void {
+    const t = this.thermalState
+    if (!t) return
+    if (t.ownsPerSample) this.gl.deleteTexture(t.perSample)
+    if (t.ownsBulk && t.bulk) this.gl.deleteTexture(t.bulk)
+    this.thermalState = null
   }
 
   /** Upload samples not yet on the GPU (appends only, so live jobs upload incrementally). */
@@ -354,9 +370,13 @@ export class GlSim {
     for (const t of this.pools.values()) t.dispose()
     this.pools.clear()
     this.dropCheckpoints()
+    this.dropThermal()
+    this.thermalStep?.release()
     this.bins = this.binStore = null
     const gl = this.gl
     gl.bindBuffer(gl.ARRAY_BUFFER, this.binBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
   }
 
@@ -377,23 +397,43 @@ export class GlSim {
     gl.enable(gl.BLEND)
     gl.blendEquation(gl.FUNC_ADD)
     gl.blendFunc(gl.ONE, gl.ONE)
-    this.deposit
+    const inv2 = 1 / (grid.pitchMm * grid.pitchMm)
+    const program = this.active ? this.depositThermal : this.deposit
+    program
       .use()
       .f('u_origin', grid.originXMm, grid.originYMm)
       .f('u_invPitch', 1 / grid.pitchMm)
       .f('u_rectOffset', rect.x, rect.y)
       .f('u_size', rect.width, rect.height)
-      .f('u_scale', material.absorption / (grid.pitchMm * grid.pitchMm))
+      .f('u_scale', this.active ? inv2 : material.absorption * inv2)
+    if (this.active) {
+      gl.activeTexture(gl.TEXTURE3)
+      gl.bindTexture(gl.TEXTURE_2D, this.active.perSample)
+      program.i('u_perSample', 3)
+    }
   }
 
-  /** Draw samples [first, first + count) of `buffer` (interleaved xye) as deposit points. */
-  private drawSamples(buffer: WebGLBuffer, first: number, count: number): void {
+  /**
+   * Draw samples [first, first + count) of `buffer` (interleaved xye) as deposit
+   * points. `binned` draws from the bin buffer, whose store indices are in binIndexBuffer.
+   */
+  private drawSamples(buffer: WebGLBuffer, first: number, count: number, binned = false): void {
     if (count <= 0) return
     const gl = this.gl
     gl.bindVertexArray(this.sampleVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, first * 12)
+    if (this.active) {
+      this.depositThermal.i('u_first', first).i('u_binned', binned ? 1 : 0)
+      if (binned) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
+        gl.enableVertexAttribArray(1)
+        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 4, first * 4)
+        gl.vertexAttribDivisor(1, 1)
+      } else gl.disableVertexAttribArray(1)
+    }
     gl.drawArraysInstanced(gl.POINTS, 0, 4, count)
+    if (this.active && binned) gl.disableVertexAttribArray(1)
   }
 
   /** Multi-tile deposit: only the bins that can reach this tile's padded rect. */
@@ -406,13 +446,15 @@ export class GlSim {
       this.binStore = store
       gl.bindBuffer(gl.ARRAY_BUFFER, this.binBuffer)
       gl.bufferData(gl.ARRAY_BUFFER, this.bins.xye, gl.STATIC_DRAW)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
+      gl.bufferData(gl.ARRAY_BUFFER, this.bins.index, gl.STATIC_DRAW)
     }
     // One cell of slack for the bilinear footprint; anything else off the rect is clipped.
     const x0 = grid.originXMm + (padded.x - 1) * grid.pitchMm
     const y0 = grid.originYMm + (padded.y - 1) * grid.pitchMm
     const x1 = grid.originXMm + (padded.x + padded.width + 1) * grid.pitchMm
     const y1 = grid.originYMm + (padded.y + padded.height + 1) * grid.pitchMm
-    for (const [first, count] of this.bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(this.binBuffer, first, count)
+    for (const [first, count] of this.bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(this.binBuffer, first, count, true)
   }
 
   /**
@@ -425,7 +467,7 @@ export class GlSim {
     const gl = this.gl
     const { grid } = setup
     const whole = { x: 0, y: 0, width: grid.width, height: grid.height }
-    const key = [grid.originXMm, grid.originYMm, grid.pitchMm, grid.width, grid.height, setup.material.absorption].join()
+    const key = [grid.originXMm, grid.originYMm, grid.pitchMm, grid.width, grid.height, setup.material.absorption, this.active?.id ?? 0].join()
     if (!this.checkpoints || this.checkpoints.key !== key || this.checkpoints.store !== store) {
       this.dropCheckpoints()
       this.checkpoints = { key, store, spacing: CHECKPOINT_MIN_SPACING, targets: [] }
@@ -589,13 +631,18 @@ export class GlSim {
         throw new Error(`tile ${t.padded.width}×${t.padded.height} exceeds MAX_TEXTURE_SIZE ${this.caps.maxTextureSize}`)
     this.syncSamples(store)
     const n = store.countUntil(options.timeCutoffS ?? Infinity)
+    const th = this.thermalTextures(store, setup)
+    this.active = this.caps.floatBlend ? th : null
     const maxW = Math.max(...plan.tiles.map((t) => t.padded.width))
     const maxH = Math.max(...plan.tiles.map((t) => t.padded.height))
     const ts = this.pool(poolKind, maxW, maxH)
     const stageMs: Partial<Record<GlStage, number>> = {}
-    const energy: StageEnergy | null = options.measureEnergy
-      ? { expectedJ: store.energyOf(n) * material.absorption, depositJ: 0, blurHJ: 0, blurVJ: 0, clippedJ: 0 }
-      : null
+    let expectedJ = 0
+    if (options.measureEnergy) {
+      if (th) for (let i = 0; i < n; i++) expectedJ += th.result.eDose[i]!
+      else expectedJ = store.energyOf(n) * material.absorption
+    }
+    const energy: StageEnergy | null = options.measureEnergy ? { expectedJ, depositJ: 0, blurHJ: 0, blurVJ: 0, clippedJ: 0 } : null
     const cellArea = grid.pitchMm * grid.pitchMm
     const timed = (stage: GlStage, fbo: WebGLFramebuffer, work: () => void) => {
       if (!options.syncStages) return work()
@@ -632,7 +679,7 @@ export class GlSim {
           }
           gl.disable(gl.BLEND)
         } else {
-          const dep = depositCpu(store, n, grid, padded, material.absorption)
+          const dep = depositCpu(store, n, grid, padded, material.absorption, th?.result.eDose ?? null)
           gl.bindTexture(gl.TEXTURE_2D, ts.a.tex)
           gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RED, gl.FLOAT, dep.data)
         }
@@ -665,8 +712,21 @@ export class GlSim {
         gl.viewport(0, 0, w, h)
         gl.activeTexture(gl.TEXTURE0)
         gl.bindTexture(gl.TEXTURE_2D, ts.a.tex)
+        const bulkPlan = th?.result.plan ?? null
+        gl.activeTexture(gl.TEXTURE1)
+        gl.bindTexture(gl.TEXTURE_2D, th?.bulk ?? null)
+        const tileOrigin = { x: grid.originXMm + padded.x * grid.pitchMm, y: grid.originYMm + padded.y * grid.pitchMm }
         this.response
           .use()
+          .i('u_thermal', th?.bulk && bulkPlan ? 1 : 0)
+          .i('u_bulk', 1)
+          .f('u_cellOriginMm', tileOrigin.x, tileOrigin.y)
+          .f('u_pitchMm', grid.pitchMm)
+          .f('u_bulkOriginMm', bulkPlan?.grid.originXMm ?? 0, bulkPlan?.grid.originYMm ?? 0)
+          .f('u_bulkInvPitch', bulkPlan ? 1 / bulkPlan.grid.pitchMm : 0)
+          .i('u_bulkSize', bulkPlan?.grid.width ?? 0, bulkPlan?.grid.height ?? 0)
+          .f('u_ambientK', th?.result.ambientK ?? 0)
+          .f('u_fireK', material.fireRisk.kind === 'temperature' ? material.fireRisk.thresholdK : FLT_BIG)
           .i('u_fluence', 0)
           .i('u_size', w, h)
           .f('u_colorA', rp.colorA.l, rp.colorA.a, rp.colorA.b)
@@ -691,6 +751,8 @@ export class GlSim {
         options.onTile({
           tile,
           setup,
+          quantity: th ? 'dose' : 'fluence',
+          thermal: th?.result ?? null,
           fluence: ts.a.tex,
           color: ts.color,
           depth: ts.depth,
@@ -711,7 +773,8 @@ export class GlSim {
     }
     if (energy) energy.clippedJ = energy.expectedJ - energy.depositJ
     this.lastFbo = ts.a.fbo
-    return { sampleCount: n, tileCount: plan.tiles.length, stageMs, energy, cpuDeposit: !this.caps.floatBlend }
+    this.active = null
+    return { sampleCount: n, tileCount: plan.tiles.length, stageMs, energy, cpuDeposit: !this.caps.floatBlend, thermal: th?.result ?? null }
   }
 
   private composite(ov: GlOverview, setup: SimSetup, tile: Tile, ts: TargetSet): void {

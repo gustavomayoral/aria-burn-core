@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Material profile schema (COD-250 response kinds, COD-257 calibration,
-// COD-258 thermal slot). Each kind declares only the fields it uses; every
-// response parameter is a threshold or slope on fluence so calibration fits
-// never need a schema change.
+// COD-258 thermal model). Each kind declares only the fields it uses; every
+// response parameter is a threshold or slope on fluence (on thermal dose when
+// the material has a thermal model) so calibration fits never need a schema change.
 
 import { Type, type Static } from '@sinclair/typebox'
 import { CONTRACT_VERSION, Fraction, Lab, NonNegative, Positive, Provenance, named } from './common.ts'
