@@ -62,6 +62,33 @@ void main() {
   o = vec4(acc, 0.0, 0.0, 0.0);
 }`
 
+/**
+ * The sheared Y pass of a rotated kernel (kernel.ts SkewTaps). u_taps texel t
+ * holds (w0, w1, x offset): row offset t reads x + offset and the cell after.
+ * Same summation order as cpu.ts skewPass.
+ */
+export const SKEW_BLUR_FS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D u_src;
+uniform highp sampler2D u_taps;
+uniform int u_radius;
+uniform ivec2 u_size;
+out vec4 o;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  float acc = 0.0;
+  for (int t = -u_radius; t <= u_radius; t++) {
+    int y = p.y + t;
+    if (y < 0 || y >= u_size.y) continue;
+    vec4 tap = texelFetch(u_taps, ivec2(t + u_radius, 0), 0);
+    int x = p.x + int(tap.b);
+    if (x >= 0 && x < u_size.x) acc += texelFetch(u_src, ivec2(x, y), 0).r * tap.r;
+    if (x + 1 >= 0 && x + 1 < u_size.x) acc += texelFetch(u_src, ivec2(x + 1, y), 0).r * tap.g;
+  }
+  o = vec4(acc, 0.0, 0.0, 0.0);
+}`
+
 /** Response kinds → colour (sRGB8), depth (mm), verdict bucket. MRT. */
 export const RESPONSE_FS = `#version 300 es
 precision highp float;

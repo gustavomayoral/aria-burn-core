@@ -6,6 +6,7 @@ import {
   coarseGrid,
   coarseKernel,
   gridPitchMm,
+  kernelRadiusMm,
   kernelSigma,
   planJobGrid,
   planLiveTiles,
@@ -58,7 +59,7 @@ export function coarseSetup(full: SimSetup): SimSetup {
   const grid = coarseGrid(full.grid)
   const kernel = coarseKernel(full.kernel, grid.pitchMm)
   const whole = { x: 0, y: 0, width: grid.width, height: grid.height }
-  const marginCells = Math.ceil(Math.max(kernel.sigmaUMm, kernel.sigmaVMm) * 3 / grid.pitchMm)
+  const marginCells = Math.ceil(kernelRadiusMm(kernel) / grid.pitchMm)
   return {
     ...full,
     kernel,

@@ -199,7 +199,7 @@ describe('deposit and blur conserve fluence', () => {
     const pitch = setup.grid.pitchMm
     expect(setup.separable.y.sigmaCells * pitch).toBeCloseTo(Math.hypot(machine.spot.sigmaXMm, wood.sigmaHeatMm), 9)
     expect(setup.separable.x.sigmaCells * pitch).toBeCloseTo(Math.hypot(machine.spot.sigmaYMm, wood.sigmaHeatMm), 9)
-    expect(setup.separable.exact).toBe(true)
+    expect(setup.separable.skew).toBeNull()
   })
 
   it('per-stage energy of a full run is within 1%', () => {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// WebGL2 pipeline: deposit → blur H → blur V → response, per tile, with
+// WebGL2 pipeline: deposit → blur H → blur V (sheared for rotated spots) → response, per tile, with
 // render targets pooled across tiles and runs (COD-252: reallocating ~GBs of
 // float targets per pass stalls the driver). Full-res and coarse runs keep
 // separate pools so scrubbing never evicts the full-res targets.
@@ -11,7 +11,7 @@ import type { CellRect, Tile } from '../../contract/index.ts'
 import { UNTOUCHED_FRACTION, verdictThresholds } from '../../contract/index.ts'
 import { depositCpu, type StageEnergy } from '../cpu.ts'
 import { coarseSetup, type SimSetup } from '../job.ts'
-import type { Kernel1D } from '../kernel.ts'
+import type { Kernel1D, SkewTaps } from '../kernel.ts'
 import { responseParams } from '../response.ts'
 import { SampleBins } from '../bins.ts'
 import type { SampleStore } from '../sample-store.ts'
@@ -24,6 +24,7 @@ import {
   REDUCE_FACTOR,
   REDUCE_FS,
   RESPONSE_FS,
+  SKEW_BLUR_FS,
 } from './shaders.ts'
 
 export interface GlCaps {
@@ -265,6 +266,7 @@ export class GlSim {
   readonly caps: GlCaps
   private readonly deposit: Program
   private readonly blur: Program
+  private readonly skewBlur: Program
   private readonly response: Program
   private readonly reduce: Program
   private readonly overviewProgram: Program
@@ -303,6 +305,7 @@ export class GlSim {
     }
     this.deposit = new Program(gl, DEPOSIT_VS, DEPOSIT_FS)
     this.blur = new Program(gl, FULLSCREEN_VS, BLUR_FS)
+    this.skewBlur = new Program(gl, FULLSCREEN_VS, SKEW_BLUR_FS)
     this.response = new Program(gl, FULLSCREEN_VS, RESPONSE_FS)
     this.reduce = new Program(gl, FULLSCREEN_VS, REDUCE_FS)
     this.overviewProgram = new Program(gl, FULLSCREEN_VS, OVERVIEW_FS)
@@ -470,12 +473,32 @@ export class GlSim {
   }
 
   private weights(k: Kernel1D): WebGLTexture {
-    const key = `${k.sigmaCells}`
+    const key = `${k.sigmaCells}/${k.radius}`
     let t = this.weightTextures.get(key)
     if (!t) {
       const gl = this.gl
       t = texture(gl, gl.R32F, k.weights.length, 1)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, k.weights.length, 1, gl.RED, gl.FLOAT, k.weights)
+      this.weightTextures.set(key, t)
+    }
+    return t
+  }
+
+  /** Taps of a sheared Y pass as RGBA32F texels (w0, w1, x offset, 0). */
+  private skewTaps(k: Kernel1D, skew: SkewTaps): WebGLTexture {
+    const key = `skew/${k.sigmaCells}/${k.radius}/${skew.shear}`
+    let t = this.weightTextures.get(key)
+    if (!t) {
+      const gl = this.gl
+      const n = k.weights.length
+      const texels = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) {
+        texels[i * 4] = skew.w0[i]!
+        texels[i * 4 + 1] = skew.w1[i]!
+        texels[i * 4 + 2] = skew.offset[i]!
+      }
+      t = texture(gl, gl.RGBA32F, n, 1)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, 1, gl.RGBA, gl.FLOAT, texels)
       this.weightTextures.set(key, t)
     }
     return t
@@ -582,7 +605,7 @@ export class GlSim {
       stageMs[stage] = (stageMs[stage] ?? 0) + performance.now() - t0
     }
     const wx = this.weights(separable.x)
-    const wy = this.weights(separable.y)
+    const wy = separable.skew ? this.skewTaps(separable.y, separable.skew) : this.weights(separable.y)
     const rp = responseParams(material)
     const vt = verdictThresholds(material.response)
     const fireAt = material.fireRisk.kind === 'fluence' ? material.fireRisk.thresholdJPerMm2 : FLT_BIG
@@ -624,7 +647,8 @@ export class GlSim {
         gl.bindTexture(gl.TEXTURE_2D, src.tex)
         gl.activeTexture(gl.TEXTURE1)
         gl.bindTexture(gl.TEXTURE_2D, weights)
-        this.blur.use().i('u_src', 0).i('u_weights', 1).i('u_radius', k.radius).i('u_dir', ...dir).i('u_size', w, h)
+        if (dir[1] === 1 && separable.skew) this.skewBlur.use().i('u_src', 0).i('u_taps', 1).i('u_radius', k.radius).i('u_size', w, h)
+        else this.blur.use().i('u_src', 0).i('u_weights', 1).i('u_radius', k.radius).i('u_dir', ...dir).i('u_size', w, h)
         gl.drawArrays(gl.TRIANGLES, 0, 3)
       }
       timed('blurH', ts.b.fbo, () => pass(ts.a, ts.b, separable.x, wx, [1, 0]))

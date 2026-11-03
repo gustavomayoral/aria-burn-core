@@ -12,6 +12,11 @@
 //     σ_total = √(σ_spot² + σ_heat²) per spot axis, rotated by spot.angleDeg.
 //     σ_heat is isotropic. The kernel is truncated at KERNEL_RADIUS_SIGMAS and
 //     normalised by its discrete sum, so blur conserves Σ fluence · pitch².
+//   - The blur is a pass along machine X then a sheared pass along Y
+//     (shearedKernel). Axis-aligned spots have shear 0, a plain separable blur.
+//     For a rotated spot the Y pass at row offset t reads at x + shear·t,
+//     linearly interpolated, which restores the X–Y correlation; the X pass
+//     σ is reduced by the interpolation's variance. Each pass sums to 1.
 //   - Conservation: Σ cell · pitch² equals Σ E within 1% after deposit and after
 //     each blur pass (COD-252 pass criterion).
 
@@ -42,9 +47,39 @@ export function kernelSigma(spot: Spot, sigmaHeatMm: number): KernelSigma {
   }
 }
 
-/** Kernel reach in mm; the margin every grid and tile carries around burned area. */
+/**
+ * The kernel's covariance [[a, c], [c, b]] in machine axes, split as an X
+ * Gaussian (σx² = a − c²/b) followed by a Y Gaussian (σy² = b) sheared by
+ * c / b cells of X per cell of Y.
+ */
+export interface ShearedKernel {
+  sigmaXMm: number
+  sigmaYMm: number
+  /** X offset per unit Y offset (mm/mm). 0 for axis-aligned kernels. */
+  shear: number
+}
+
+export function shearedKernel(kernel: KernelSigma): ShearedKernel {
+  const r = (kernel.angleDeg * Math.PI) / 180
+  const c2 = Math.cos(r) ** 2
+  const s2 = Math.sin(r) ** 2
+  const u2 = kernel.sigmaUMm ** 2
+  const v2 = kernel.sigmaVMm ** 2
+  const a = u2 * c2 + v2 * s2
+  const b = u2 * s2 + v2 * c2
+  // Multiples of 90° and round kernels are axis-aligned; snap the float noise of cos(90°) to exactly 0.
+  if (Math.min(c2, s2) < 1e-9 || Math.abs(u2 - v2) < 1e-15) return { sigmaXMm: Math.sqrt(a), sigmaYMm: Math.sqrt(b), shear: 0 }
+  const c = (u2 - v2) * Math.cos(r) * Math.sin(r)
+  return { sigmaXMm: Math.sqrt(Math.max(0, a - (c * c) / b)), sigmaYMm: Math.sqrt(b), shear: c / b }
+}
+
+/**
+ * Kernel reach in mm; the margin every grid and tile carries around burned area.
+ * For a rotated kernel this is the sheared blur's X reach when that is larger.
+ */
 export function kernelRadiusMm(kernel: KernelSigma): number {
-  return KERNEL_RADIUS_SIGMAS * Math.max(kernel.sigmaUMm, kernel.sigmaVMm)
+  const { sigmaXMm, sigmaYMm, shear } = shearedKernel(kernel)
+  return KERNEL_RADIUS_SIGMAS * Math.max(kernel.sigmaUMm, kernel.sigmaVMm, sigmaXMm + Math.abs(shear) * sigmaYMm)
 }
 
 export interface GridSpec {

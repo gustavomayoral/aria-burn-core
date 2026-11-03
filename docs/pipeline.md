@@ -16,10 +16,10 @@ JobModel ─▶ MotionSampler ─▶ sample batches ─▶ SampleStore ─▶ pe
 |---|---|---|
 | Profiles | `profiles.ts` | Loaded from JSON data files and validated with the TypeBox schemas plus `checkMaterialProfile` / `checkMachineProfile`. Nothing is hard-coded. |
 | Sampling | `sampler.ts` | **Interim** trapezoid sampler behind `MotionSampler`, written from scratch (not GRBL; the COD-255 port is GPLv3 in aria-burn). Per move it uses the axis-limited accel and max rate along the move direction. The junction speed is `min(v_a, v_b)·max(0, cos θ)`, followed by backward and forward feasibility passes. Each constant-acceleration block is split into equal-time intervals and sampled at the interval midpoints, per `samples.ts`. Output is byte-identical to the planner's channel batches. |
-| Power | contract `opticalPowerW` | M3 is constant. M4 scales S by actual ÷ programmed speed before the S → power curve. |
+| Power | contract `opticalPowerW` | M3 is constant. M4 scales S by actual ÷ programmed speed, then the machine profile's `powerCurve` maps S to optical power, linear between points (COD-256). The provisional diode curve has a dead zone below S 5% and a convex knee up to S 20% (COD-266, provisional). |
 | Store | `sample-store.ts` | Interleaved `[x, y, power·dt]` f32 (uploaded to the GPU as-is), f64 times, and source lines. A time cutoff is a prefix. Batch sequence gaps are recorded. |
 | Deposit | `cpu.ts` `depositCpu`, `gl/shaders.ts` `DEPOSIT_VS` | `E·absorption / pitch²`, split bilinearly over the four nearest cell centres. On the GPU each sample is one instance of four 1-pixel points on exact cell centres, added into R32F with `EXT_float_blend`. Without that extension the CPU deposit is uploaded instead. Pitch = minor spot σ ÷ 3. |
-| Blur | `kernel.ts`, `BLUR_FS` | Separable Gaussian, `σ_total = √(σ_spot² + σ_heat²)` per axis. Truncated at 3σ, normalised by the discrete sum, zero outside the tile. It runs along machine X then Y. That is exact for machine-aligned spots (the provisional diode is at 90°). For rotated spots it keeps the X/Y variances and drops the correlation; the rotated kernel is COD-256. |
+| Blur | `kernel.ts`, `BLUR_FS`, `SKEW_BLUR_FS` | Elliptical Gaussian (COD-256), `σ_total = √(σ_spot² + σ_heat²)` per spot axis, rotated by `spot.angleDeg`. Truncated at 3σ, normalised by the discrete sum, zero outside the tile. It runs along machine X, then along Y. For machine-aligned spots (the provisional diode is at 90°) that is a plain separable blur at unchanged cost. For a rotated spot the Y pass is sheared (contract `shearedKernel`): row offset t reads at `x + shear·t`, split linearly over two cells, and the X pass is narrowed by the split's variance. The full covariance, including the X–Y term, is reproduced. The sheared pass does two fetches per tap, so it costs about 1.5× an aligned blur. |
 | Response | `response.ts`, `RESPONSE_FS` | **char**: tone ramp `((F−start)/(end−start))^γ`, Lab lerp, depth above the ablation threshold. **melt**: frost ramp and depth above removal. A polished edge (F ≥ frostFull, below removal, with a 4-neighbour at or above removal) shows the base colour. **bleach**: mark ramp, depth always 0. Lab (D65) → sRGB8 per cell. |
 | Verdict | contract `classifyFluence`, `RESPONSE_FS` | Per-cell bucket (untouched / under / in range / over / fire risk) in an R8UI target. |
 | Hover | `readout.ts` `CellReader` | Contract `CellReadout` computed on demand from the samples near the cell (bucket index), rather than read back from tiles. It is exact against the grid pipeline, works at any zoom and cutoff, and reports the top contributing source lines. |
@@ -65,6 +65,14 @@ See `docs/bench/cod-264-macos-m1.txt`, from `pnpm bench` in the Claude app's Chr
 | Coarse scrub, warm median (moving cutoff) | 3.5 ms | < 50 ms ✅ |
 | Fluence, every stage, full and coarse | 0.9999–1.0000 | within 1% ✅ |
 | GPU vs CPU, tiled vs untiled | 1e-6 of peak, Δcolour ≤ 1, 0 verdict mismatches | ✅ |
+
+**Rotated spot (COD-256).** The bench's GPU-vs-CPU job with the provisional spot turned to 30° gives:
+
+- GPU vs CPU: 1.2e-6 of peak, Δcolour ≤ 1, 0 verdict mismatches.
+- Energy: 1.0000 at every stage.
+- Blur H+V: 7.0 ms median, against 5.1 ms for the same spot axis-aligned (1440², M1).
+
+Axis-aligned spots, including every current profile, run the unchanged separable blur.
 
 **Not yet measured:** the Tauri WKWebView and Windows/Iris Xe. COD-252 measured Iris Xe at about 1.6× the macOS full-res time, with sync overhead on top.
 

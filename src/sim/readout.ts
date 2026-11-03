@@ -102,9 +102,25 @@ export class CellReader {
     const { pitchMm } = grid
     const kx = separable.x
     const ky = separable.y
+    const skew = separable.skew
     const scale = material.absorption / (pitchMm * pitchMm)
+    // Kernel weight from deposit cell (X, Y) to (cx, cy): the X pass, then the Y pass,
+    // which for a rotated spot reads the X pass at cx + offset and the cell after it.
+    const xWeight = (from: number, at: number): number => {
+      const o = at - from
+      return o < -kx.radius || o > kx.radius || at < 0 || at >= grid.width ? 0 : kx.weights[o + kx.radius]!
+    }
+    const kernelAt = (X: number, Y: number): number => {
+      const t = Y - cy
+      if (t < -ky.radius || t > ky.radius) return 0
+      const tap = t + ky.radius
+      if (!skew) return ky.weights[tap]! * xWeight(X, cx)
+      const at = cx + skew.offset[tap]!
+      return skew.w0[tap]! * xWeight(X, at) + skew.w1[tap]! * xWeight(X, at + 1)
+    }
+    const maxShift = skew ? Math.ceil(Math.abs(skew.shear) * ky.radius) : 0
     // Cells that can blur into (cx, cy), widened by one cell for the bilinear footprint.
-    const reachX = (kx.radius + 1) * pitchMm
+    const reachX = (kx.radius + maxShift + 1) * pitchMm
     const reachY = (ky.radius + 1) * pitchMm
     const centreX = grid.originXMm + (cx + 0.5) * pitchMm
     const centreY = grid.originYMm + (cy + 0.5) * pitchMm
@@ -119,15 +135,11 @@ export class CellReader {
       const ay = fy - iy
       let w = 0
       for (let dy = 0; dy < 2; dy++) {
-        const oy = cy - (iy + dy)
-        if (oy < -ky.radius || oy > ky.radius) continue
         if (iy + dy < 0 || iy + dy >= grid.height) continue
-        const wy = (dy ? ay : 1 - ay) * ky.weights[oy + ky.radius]!
+        const wy = dy ? ay : 1 - ay
         for (let dx = 0; dx < 2; dx++) {
-          const ox = cx - (ix + dx)
-          if (ox < -kx.radius || ox > kx.radius) continue
           if (ix + dx < 0 || ix + dx >= grid.width) continue
-          w += (dx ? ax : 1 - ax) * kx.weights[ox + kx.radius]! * wy
+          w += (dx ? ax : 1 - ax) * wy * kernelAt(ix + dx, iy + dy)
         }
       }
       if (w === 0) return

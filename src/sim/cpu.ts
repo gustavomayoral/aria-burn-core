@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-// CPU reference pipeline: deposit → separable blur → response, tiled per the
+// CPU reference pipeline: deposit → two-pass blur → response, tiled per the
 // contract. It is the oracle the WebGL2 path is checked against, the headless
 // path for Vitest, and the fallback when EXT_float_blend is missing.
 
 import type { CellRect, GridSpec, SimOutputs } from '../contract/index.ts'
-import type { Kernel1D, SeparableKernel } from './kernel.ts'
+import type { Kernel1D, SeparableKernel, SkewTaps } from './kernel.ts'
 import { coarseSetup, subGrid, type SimSetup } from './job.ts'
 import { respond } from './response.ts'
 import type { SampleStore } from './sample-store.ts'
@@ -84,6 +84,29 @@ function blurPass(src: Float32Array, width: number, height: number, k: Kernel1D,
   return out
 }
 
+/** The sheared Y pass of a rotated kernel: row offset t reads x + offset[t] and the cell after it. */
+function skewPass(src: Float32Array, width: number, height: number, k: Kernel1D, skew: SkewTaps): Float32Array {
+  const out = new Float32Array(src.length)
+  const { radius } = k
+  const { offset, w0, w1 } = skew
+  for (let j = 0; j < height; j++) {
+    const lo = Math.max(-radius, -j)
+    const hi = Math.min(radius, height - 1 - j)
+    for (let i = 0; i < width; i++) {
+      let acc = 0
+      for (let t = lo; t <= hi; t++) {
+        const tap = t + radius
+        const x = i + offset[tap]!
+        const row = (j + t) * width
+        if (x >= 0 && x < width) acc += src[row + x]! * w0[tap]!
+        if (x + 1 >= 0 && x + 1 < width) acc += src[row + x + 1]! * w1[tap]!
+      }
+      out[j * width + i] = acc
+    }
+  }
+  return out
+}
+
 export function blurCpu(
   data: Float32Array,
   width: number,
@@ -91,7 +114,7 @@ export function blurCpu(
   kernel: SeparableKernel,
 ): { afterH: Float32Array; afterV: Float32Array } {
   const afterH = blurPass(data, width, height, kernel.x, true)
-  const afterV = blurPass(afterH, width, height, kernel.y, false)
+  const afterV = kernel.skew ? skewPass(afterH, width, height, kernel.y, kernel.skew) : blurPass(afterH, width, height, kernel.y, false)
   return { afterH, afterV }
 }
 

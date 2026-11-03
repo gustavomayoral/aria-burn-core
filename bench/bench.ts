@@ -226,6 +226,28 @@ async function run(): Promise<BenchReport> {
   const gpuEnergy = sim.run(small.store, tiled, { measureEnergy: true }).energy!
   log(`  energy after blur V: CPU ${cpuEnergy.blurVJ.toExponential(5)} · GPU tiled ${gpuEnergy.blurVJ.toExponential(5)}`)
 
+  log()
+  log('== Rotated spot (COD-256): same job, provisional diode spot at 30° (sheared Y pass) ==')
+  const rotated: MachineProfile = { ...machine, spot: { ...machine.spot, angleDeg: 30 } }
+  const rotUntiled = setupJob(small.store.burnBounds!, rotated, birch)
+  const rotTiled = setupJob(small.store.burnBounds!, rotated, birch, { maxTileCells: 700 })
+  const rotCpu = stitch(simulateCpu(small.store, rotUntiled))
+  const rotCpuArrays = { fluence: rotCpu.fluence.data, color: rotCpu.color, verdict: rotCpu.verdict }
+  const rotGpuTiled = gpuStitched(small.store, rotTiled)
+  log(`skew taps ${rotUntiled.separable.y.radius * 2 + 1} · shear ${rotUntiled.separable.skew?.shear.toFixed(4)} · margin ${rotTiled.plan.marginCells}`)
+  log(`  GPU untiled vs CPU:    ${diff(gpuStitched(small.store, rotUntiled), rotCpuArrays)}`)
+  log(`  GPU tiled vs CPU:      ${diff(rotGpuTiled, rotCpuArrays)}`)
+  energyTable('GPU tiled, rotated', sim.run(small.store, rotTiled, { measureEnergy: true }).energy!)
+  const blurMs = (s: SimSetup) => {
+    const r: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const st = sim.run(small.store, s, { syncStages: true }).stageMs
+      r.push((st.blurH ?? 0) + (st.blurV ?? 0))
+    }
+    return r
+  }
+  log(`  blur H+V, aligned ${stats(blurMs(untiled))} · rotated ${stats(blurMs(rotUntiled))}`)
+
   // Restore the big job on the canvas.
   sim.run(big.store, setup, { overview })
   overview.drawToCanvas()
