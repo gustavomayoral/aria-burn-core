@@ -14,7 +14,15 @@
     "ablationThresholdJPerMm2": 0.43,
     "depthMmPerJPerMm2": 0.17
   },
-  "fireRisk": { "kind": "fluence", "thresholdJPerMm2": 12 },
-  "thermal": { "kind": "none" },
+  "fireRisk": { "kind": "temperature", "thresholdK": 873 },
+  "thermal": {
+    "kind": "peakTemperature",
+    "conductivityWPerMmK": 1.6e-4,
+    "volumetricHeatCapacityJPerMm3K": 1.09e-3,
+    "ambientK": 293,
+    "rampOnsetK": 523,
+    "referenceSpeedMmPerS": 100,
+    "absorptionAtFullChar": 0.9
+  },
   "provenance": { "source": "provisional", "notes": "PROVISIONAL - not validated against real burns (COD-266). Derived from published settings and datasheets; COD-254 replaces these. Sources and derivation: src/profiles/provisional/SOURCES.md" }
 }

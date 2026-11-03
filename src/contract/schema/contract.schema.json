@@ -355,7 +355,7 @@
       ]
     },
     "FireRisk": {
-      "description": "Fire-risk verdict threshold. v1 profiles use fluence; COD-258 moves this to temperature.",
+      "description": "Fire-risk verdict threshold. `temperature` (COD-258) compares the bulk temperature, not the sub-millisecond flash of a pass.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -383,7 +383,7 @@
               "type": "string"
             },
             "thresholdJPerMm2": {
-              "description": "Flashpoint-style fluence threshold (J/mm²)",
+              "description": "Flashpoint-style fluence threshold (thermal dose when a thermal model is set) (J/mm²)",
               "minimum": 0,
               "type": "number"
             }
@@ -402,7 +402,7 @@
               "type": "string"
             },
             "thresholdK": {
-              "description": "Peak-temperature threshold (K); requires a peakTemperature thermal model (COD-258)",
+              "description": "Bulk-temperature threshold (K): the preheat the thermal grid reports where a pass arrives; requires a peakTemperature thermal model (COD-258)",
               "exclusiveMinimum": 0,
               "type": "number"
             }
@@ -902,7 +902,7 @@
           "type": "string"
         },
         "absorption": {
-          "description": "Fraction of optical energy absorbed at 450 nm (v1: constant, no char feedback)",
+          "description": "Fraction of optical energy absorbed at 450 nm by fresh material (char feedback: thermal.absorptionAtFullChar)",
           "minimum": 0,
           "maximum": 1,
           "type": "number"
@@ -1245,7 +1245,7 @@
       }
     },
     "ThermalModel": {
-      "description": "Reserved slot for COD-258. v1 ships `none`; COD-258 fills in peakTemperature (Option B) or adds a speedCorrection variant (Option A). New variants are additive.",
+      "description": "Thermal step (COD-258). `none` drives the response from fluence. `peakTemperature` (Option B) runs a coarse thermal grid plus a per-pass flash term and drives the response from thermal dose (contract thermal.ts). A future speedCorrection variant (Option A) is additive.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -1267,7 +1267,9 @@
             "kind",
             "conductivityWPerMmK",
             "volumetricHeatCapacityJPerMm3K",
-            "ambientK"
+            "ambientK",
+            "rampOnsetK",
+            "referenceSpeedMmPerS"
           ],
           "properties": {
             "kind": {
@@ -1289,8 +1291,18 @@
               "exclusiveMinimum": 0,
               "type": "number"
             },
+            "rampOnsetK": {
+              "description": "Peak surface temperature where the response ramp starts (toneStart / frostStart / markStart) for a single raster pass along machine X at referenceSpeedMmPerS (K). Scales the flash term so fluence thresholds keep their meaning at the reference speed (contract thermal.ts).",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "referenceSpeedMmPerS": {
+              "description": "Speed the fluence thresholds were derived at (mm/s); the thermal dose equals fluence there",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
             "absorptionAtFullChar": {
-              "description": "Absorption once fully charred (absorption feedback)",
+              "description": "Absorption once fully charred (absorption feedback, char kind only)",
               "minimum": 0,
               "maximum": 1,
               "type": "number"

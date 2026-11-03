@@ -79,18 +79,18 @@ export const FireRisk = named(
     [
       Type.Object({ kind: Type.Literal('none') }, { additionalProperties: false }),
       Type.Object(
-        { kind: Type.Literal('fluence'), thresholdJPerMm2: Fluence('Flashpoint-style fluence threshold') },
+        { kind: Type.Literal('fluence'), thresholdJPerMm2: Fluence('Flashpoint-style fluence threshold (thermal dose when a thermal model is set)') },
         { additionalProperties: false },
       ),
       Type.Object(
         {
           kind: Type.Literal('temperature'),
-          thresholdK: Positive('Peak-temperature threshold (K); requires a peakTemperature thermal model (COD-258)'),
+          thresholdK: Positive('Bulk-temperature threshold (K): the preheat the thermal grid reports where a pass arrives; requires a peakTemperature thermal model (COD-258)'),
         },
         { additionalProperties: false },
       ),
     ],
-    { description: 'Fire-risk verdict threshold. v1 profiles use fluence; COD-258 moves this to temperature.' },
+    { description: 'Fire-risk verdict threshold. `temperature` (COD-258) compares the bulk temperature, not the sub-millisecond flash of a pass.' },
   ),
 )
 export type FireRisk = Static<typeof FireRisk>
@@ -106,14 +106,18 @@ export const ThermalModel = named(
           conductivityWPerMmK: Positive('Thermal conductivity (W/(mm·K))'),
           volumetricHeatCapacityJPerMm3K: Positive('Density × specific heat (J/(mm³·K))'),
           ambientK: Positive('Ambient / initial temperature (K)'),
-          absorptionAtFullChar: Type.Optional(Fraction('Absorption once fully charred (absorption feedback)')),
+          rampOnsetK: Positive(
+            'Peak surface temperature where the response ramp starts (toneStart / frostStart / markStart) for a single raster pass along machine X at referenceSpeedMmPerS (K). Scales the flash term so fluence thresholds keep their meaning at the reference speed (contract thermal.ts).',
+          ),
+          referenceSpeedMmPerS: Positive('Speed the fluence thresholds were derived at (mm/s); the thermal dose equals fluence there'),
+          absorptionAtFullChar: Type.Optional(Fraction('Absorption once fully charred (absorption feedback, char kind only)')),
         },
         { additionalProperties: false },
       ),
     ],
     {
       description:
-        'Reserved slot for COD-258. v1 ships `none`; COD-258 fills in peakTemperature (Option B) or adds a speedCorrection variant (Option A). New variants are additive.',
+        'Thermal step (COD-258). `none` drives the response from fluence. `peakTemperature` (Option B) runs a coarse thermal grid plus a per-pass flash term and drives the response from thermal dose (contract thermal.ts). A future speedCorrection variant (Option A) is additive.',
     },
   ),
 )
@@ -126,7 +130,7 @@ export const MaterialProfile = named(
       contractVersion: Type.Literal(CONTRACT_VERSION),
       id: Type.String({ description: 'Stable slug, e.g. "birch-ply-generic"', pattern: '^[a-z0-9][a-z0-9-]*$' }),
       name: Type.String({ minLength: 1 }),
-      absorption: Fraction('Fraction of optical energy absorbed at 450 nm (v1: constant, no char feedback)'),
+      absorption: Fraction('Fraction of optical energy absorbed at 450 nm by fresh material (char feedback: thermal.absorptionAtFullChar)'),
       sigmaHeatMm: NonNegative('Heat-spread length added in quadrature to the spot sigma (mm)'),
       response: MaterialResponse,
       fireRisk: FireRisk,
@@ -171,5 +175,12 @@ export function checkMaterialProfile(profile: MaterialProfile): string[] {
   }
   if (profile.fireRisk.kind === 'temperature' && profile.thermal.kind !== 'peakTemperature')
     problems.push('fireRisk.kind = temperature requires thermal.kind = peakTemperature')
+  if (profile.thermal.kind === 'peakTemperature') {
+    const t = profile.thermal
+    if (t.rampOnsetK <= t.ambientK) problems.push('thermal.rampOnsetK must be above thermal.ambientK')
+    if (t.absorptionAtFullChar !== undefined && r.kind !== 'char') problems.push('thermal.absorptionAtFullChar applies to the char kind only')
+    if (profile.fireRisk.kind === 'temperature' && profile.fireRisk.thresholdK <= t.ambientK)
+      problems.push('fireRisk.thresholdK must be above thermal.ambientK')
+  }
   return problems
 }

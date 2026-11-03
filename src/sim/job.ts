@@ -21,11 +21,16 @@ import {
   type TilePlan,
 } from '../contract/index.ts'
 import { separableKernel, type SeparableKernel } from './kernel.ts'
+import type { ThermalStep } from './thermal.ts'
 
 export interface SimSetup {
   machine: MachineProfile
   material: MaterialProfile
   kernel: KernelSigma
+  /** The full-resolution kernel; the thermal step uses it at every resolution (coarse scrub included). */
+  thermalKernel: KernelSigma
+  /** Overrides the default thermal step (contract thermal.ts, Option B) for materials with a thermal model. */
+  thermalStep?: ThermalStep
   separable: SeparableKernel
   grid: GridSpec
   plan: TilePlan
@@ -38,6 +43,8 @@ export interface SetupOptions {
   pitchMm?: number
   /** 'live' anchors tiles to the absolute lattice (contract live.ts) so they stay put while a stream grows. */
   tiling?: 'regular' | 'live'
+  /** Thermal step override (e.g. an empirical speed correction in place of the peak-temperature grid). */
+  thermalStep?: ThermalStep
 }
 
 export function setupJob(
@@ -51,7 +58,9 @@ export function setupJob(
   const grid = planJobGrid(burnBounds, pitchMm, kernel)
   const maxCells = options.maxTileCells ?? TILE_MAX_CELLS
   const plan = options.tiling === 'live' ? planLiveTiles(grid, kernel, maxCells) : planTiles(grid, kernel, maxCells)
-  return { machine, material, kernel, separable: separableKernel(kernel, pitchMm), grid, plan }
+  const setup: SimSetup = { machine, material, kernel, thermalKernel: kernel, separable: separableKernel(kernel, pitchMm), grid, plan }
+  if (options.thermalStep) setup.thermalStep = options.thermalStep
+  return setup
 }
 
 /** The coarse scrub setup: same job area, coarse pitch, widened kernel, one tile. */

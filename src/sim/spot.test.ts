@@ -17,6 +17,7 @@ import {
   type JobModel,
   type KernelSigma,
   type MachineProfile,
+  type MaterialProfile,
   type Move,
 } from '../contract/index.ts'
 import {
@@ -38,7 +39,8 @@ const provisional = (name: string) =>
   readFileSync(fileURLToPath(new URL(`../profiles/provisional/${name}`, import.meta.url)), 'utf8')
 
 const machine = loadMachineProfile(provisional('machine-10w-diode.json'))
-const wood = loadMaterialProfile(provisional('birch-ply.json'))
+/** The kernel and fluence are what these tests measure, so the thermal step (COD-258) is off. */
+const wood: MaterialProfile = { ...loadMaterialProfile(provisional('birch-ply.json')), thermal: { kind: 'none' }, fireRisk: { kind: 'none' } }
 
 const rel = (a: number, b: number) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-30)
 const deg = (r: number) => (r * 180) / Math.PI

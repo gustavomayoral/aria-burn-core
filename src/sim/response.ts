@@ -12,8 +12,12 @@
 //   bleach  mark t = clamp((F − markStart) / (markFull − markStart)),
 //           colour = lerp(base, mark, t); depth = 0.
 // Colours are Lab (D65), converted to sRGB8 per cell.
+// With a peakTemperature thermal model (COD-258) every rule above reads thermal
+// dose instead of fluence, and the verdict is classifyThermal (fire risk from
+// the bulk temperature).
 
-import { classifyFluence, type Lab, type MaterialProfile } from '../contract/index.ts'
+import { classifyFluence, classifyThermal, type Lab, type MaterialProfile } from '../contract/index.ts'
+import { bulkAt, type ThermalResult } from './thermal.ts'
 
 /** Ramp parameters flattened for the shader: colour lerp a→b over [start, end]^gamma, depth above threshold. */
 export interface ResponseParams {
@@ -127,11 +131,25 @@ export interface ResponseImages {
   color: Uint8ClampedArray
   depthMm: Float32Array
   verdict: Uint8Array
+  /** Thermal outputs over the rect; null without a thermal model. */
+  dose: Float32Array | null
+  peakTemperatureK: Float32Array | null
+  bulkTemperatureK: Float32Array | null
+}
+
+/** The dose buffer (same layout as the fluence buffer) and where its cell 0 sits, for the bulk map. */
+export interface ThermalResponseInput {
+  dose: Float32Array
+  result: ThermalResult
+  originXMm: number
+  originYMm: number
+  pitchMm: number
 }
 
 /**
  * Run the response over `rect` of a fluence buffer of `stride` columns and
- * `rows` rows (neighbours outside the buffer count as zero fluence).
+ * `rows` rows (neighbours outside the buffer count as zero fluence). With
+ * `thermal`, the response reads its dose buffer instead.
  */
 export function respond(
   material: MaterialProfile,
@@ -139,13 +157,18 @@ export function respond(
   stride: number,
   rows: number,
   rect: { x: number; y: number; width: number; height: number },
+  thermal: ThermalResponseInput | null = null,
 ): ResponseImages {
   const p = responseParams(material)
   const { width, height } = rect
   const color = new Uint8ClampedArray(width * height * 4)
   const depthMm = new Float32Array(width * height)
   const verdict = new Uint8Array(width * height)
-  const at = (x: number, y: number) => (x < 0 || y < 0 || x >= stride || y >= rows ? 0 : fluence[y * stride + x]!)
+  const dose = thermal ? new Float32Array(width * height) : null
+  const peakTemperatureK = thermal ? new Float32Array(width * height) : null
+  const bulkTemperatureK = thermal ? new Float32Array(width * height) : null
+  const src = thermal ? thermal.dose : fluence
+  const at = (x: number, y: number) => (x < 0 || y < 0 || x >= stride || y >= rows ? 0 : src[y * stride + x]!)
   for (let j = 0; j < height; j++) {
     for (let i = 0; i < width; i++) {
       const x = rect.x + i
@@ -160,8 +183,14 @@ export function respond(
       labToSrgb8(cellLab(p, f, polished), color, k * 4)
       color[k * 4 + 3] = 255
       depthMm[k] = cellDepthMm(p, f)
-      verdict[k] = classifyFluence(material, f)
+      if (thermal) {
+        const bulk = bulkAt(thermal.result, thermal.originXMm + (x + 0.5) * thermal.pitchMm, thermal.originYMm + (y + 0.5) * thermal.pitchMm)
+        dose![k] = f
+        peakTemperatureK![k] = thermal.result.ambientK + thermal.result.flashK * f
+        bulkTemperatureK![k] = bulk
+        verdict[k] = classifyThermal(material, f, bulk)
+      } else verdict[k] = classifyFluence(material, f)
     }
   }
-  return { width, height, color, depthMm, verdict }
+  return { width, height, color, depthMm, verdict, dose, peakTemperatureK, bulkTemperatureK }
 }

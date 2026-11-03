@@ -8,6 +8,8 @@
 //   tS    absolute sample time (t0S + tRelS) in f64, non-decreasing, so a scrub
 //         cutoff is a prefix: samples [0, countUntil(cutoff)).
 //   line  1-based source line, for the hover readout.
+//   dtS, speedMmPerS  per-sample interval and planner speed (f32), for the
+//         thermal step's flash term (COD-258).
 
 import { SAMPLE_FIELD_INDEX, SAMPLE_FIELD_COUNT, type BoundsMm, type SampleBatchView } from '../contract/index.ts'
 
@@ -18,6 +20,8 @@ export class SampleStore {
   xye = new Float32Array(0)
   tS = new Float64Array(0)
   line = new Uint32Array(0)
+  dtS = new Float32Array(0)
+  speedMmPerS = new Float32Array(0)
   /** Bounds of sample positions (beam-on only by the sampling rule); null until the first sample. */
   burnBounds: BoundsMm | null = null
   /** Σ powerW · dtS (J), f32 fields summed in f64 like the planner's plan.done energyJ. */
@@ -43,9 +47,15 @@ export class SampleStore {
     tS.set(this.tS.subarray(0, this.count))
     const line = new Uint32Array(cap)
     line.set(this.line.subarray(0, this.count))
+    const dtS = new Float32Array(cap)
+    dtS.set(this.dtS.subarray(0, this.count))
+    const speed = new Float32Array(cap)
+    speed.set(this.speedMmPerS.subarray(0, this.count))
     this.xye = xye
     this.tS = tS
     this.line = line
+    this.dtS = dtS
+    this.speedMmPerS = speed
   }
 
   append(batch: SampleBatchView): void {
@@ -76,6 +86,8 @@ export class SampleStore {
       this.xye[j * 3 + 2] = p * dt
       this.tS[j] = t
       this.line[j] = u32[o + F.line]!
+      this.dtS[j] = dt
+      this.speedMmPerS[j] = f32[o + F.speedMmPerS]!
       this.energyJ += p * dt
       if (x < minXMm) minXMm = x
       if (x > maxXMm) maxXMm = x

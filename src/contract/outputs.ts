@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Outputs (core-internal): colour, height and verdict images from one
-// function over the fluence grid (COD-250), plus the hover readout (COD-259).
+// function over the fluence grid (COD-250), or over thermal dose (COD-258),
+// plus the hover readout (COD-259).
 
 import type { Lab } from './common.ts'
 import type { FluenceGrid, GridSpec } from './deposit.ts'
@@ -40,8 +41,15 @@ export interface SimOutputs extends GridSpec {
   /** Material removed (mm, >= 0). Zero for bleach. */
   depthMm: Float32Array
   verdict: Uint8Array
-  /** Peak temperature (K) when the material has a peakTemperature thermal model (COD-258), else null. */
+  /**
+   * Thermal dose (J/mm²) that drove colour, depth and verdict when the material
+   * has a peakTemperature thermal model (contract thermal.ts), else null.
+   */
+  dose: Float32Array | null
+  /** Equivalent single-pass peak surface temperature (K), ambient + flashKPerJPerMm2 · dose; null without a thermal model. */
   peakTemperatureK: Float32Array | null
+  /** Bulk temperature (K) at thermal-grid resolution: the hottest preheat a pass met here; null without a thermal model. */
+  bulkTemperatureK: Float32Array | null
 }
 
 /** Everything the hover readout shows for one cell. */
@@ -55,7 +63,10 @@ export interface CellReadout {
   depthMm: number
   color: Lab
   verdict: Verdict
+  /** Thermal dose (J/mm²); null without a thermal model. */
+  doseJPerMm2: number | null
   peakTemperatureK: number | null
+  bulkTemperatureK: number | null
   /** Source lines whose samples contributed most energy to this cell, most first (may be empty). */
   lines: number[]
 }

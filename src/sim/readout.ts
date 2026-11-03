@@ -6,10 +6,11 @@
 // It matches the grid pipeline exactly (same deposit and kernel weights) and
 // works at any zoom, for any tile, while live samples keep arriving.
 
-import { classifyFluence, type CellReadout } from '../contract/index.ts'
+import { classifyFluence, classifyThermal, type CellReadout } from '../contract/index.ts'
 import type { SimSetup } from './job.ts'
 import { cellDepthMm, cellLab, responseParams } from './response.ts'
 import type { SampleStore } from './sample-store.ts'
+import { bulkAt, thermalFor, type ThermalResult } from './thermal.ts'
 
 /** Most-contributing source lines reported per cell. */
 export const READOUT_MAX_LINES = 5
@@ -96,14 +97,23 @@ export class CellReader {
     return this.index
   }
 
-  /** Fluence (J/mm²) of job-grid cell (cx, cy) and per-line contributions. */
-  private evaluate(cx: number, cy: number, limit: number, lines: Map<number, number> | null): number {
+  private thermal(): ThermalResult | null {
+    const { machine, material, thermalKernel, thermalStep } = this.setup
+    return thermalFor(this.store, machine, material, thermalKernel, thermalStep)
+  }
+
+  /**
+   * Fluence (J/mm²) of job-grid cell (cx, cy) and per-line contributions. With
+   * `energies` (a thermal step's per-sample eAbs or eDose) those replace E·absorption.
+   */
+  private evaluate(cx: number, cy: number, limit: number, lines: Map<number, number> | null, energies: Float32Array | null = null): number {
     const { grid, separable, material } = this.setup
     const { pitchMm } = grid
     const kx = separable.x
     const ky = separable.y
     const skew = separable.skew
     const scale = material.absorption / (pitchMm * pitchMm)
+    const inv2 = 1 / (pitchMm * pitchMm)
     // Kernel weight from deposit cell (X, Y) to (cx, cy): the X pass, then the Y pass,
     // which for a rotated spot reads the X pass at cx + offset and the cell after it.
     const xWeight = (from: number, at: number): number => {
@@ -143,7 +153,7 @@ export class CellReader {
         }
       }
       if (w === 0) return
-      const f = w * xye[s * 3 + 2]! * scale
+      const f = energies ? w * energies[s]! * inv2 : w * xye[s * 3 + 2]! * scale
       total += f
       if (lines) {
         const line = this.store.line[s]!
@@ -166,23 +176,31 @@ export class CellReader {
     const { grid } = this.setup
     const limit = this.store.countUntil(timeCutoffS)
     const lines = new Map<number, number>()
-    const f = this.evaluate(cx, cy, limit, lines)
+    const thermal = this.thermal()
+    const fluence = this.evaluate(cx, cy, limit, thermal ? null : lines, thermal?.eAbs ?? null)
+    // The response reads dose with a thermal model; lines rank by dose then.
+    const f = thermal ? this.evaluate(cx, cy, limit, lines, thermal.eDose) : fluence
     const p = responseParams(material)
     let polished = false
     if (p.polishedEdge && f < p.depthThreshold && f >= p.edgeMinFluence) {
       for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const)
-        if (this.evaluate(cx + dx, cy + dy, limit, null) >= p.depthThreshold) polished = true
+        if (this.evaluate(cx + dx, cy + dy, limit, null, thermal?.eDose ?? null) >= p.depthThreshold) polished = true
     }
+    const xMm = grid.originXMm + (cx + 0.5) * grid.pitchMm
+    const yMm = grid.originYMm + (cy + 0.5) * grid.pitchMm
+    const bulk = thermal ? bulkAt(thermal, xMm, yMm) : null
     return {
       cellX: cx,
       cellY: cy,
-      xMm: grid.originXMm + (cx + 0.5) * grid.pitchMm,
-      yMm: grid.originYMm + (cy + 0.5) * grid.pitchMm,
-      fluenceJPerMm2: f,
+      xMm,
+      yMm,
+      fluenceJPerMm2: fluence,
       depthMm: cellDepthMm(p, f),
       color: cellLab(p, f, polished),
-      verdict: classifyFluence(material, f),
-      peakTemperatureK: null,
+      verdict: thermal ? classifyThermal(material, f, bulk!) : classifyFluence(material, f),
+      doseJPerMm2: thermal ? f : null,
+      peakTemperatureK: thermal ? thermal.ambientK + thermal.flashK * f : null,
+      bulkTemperatureK: bulk,
       lines: [...lines.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, READOUT_MAX_LINES)

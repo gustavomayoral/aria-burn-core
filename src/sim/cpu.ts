@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // CPU reference pipeline: deposit → two-pass blur → response, tiled per the
-// contract. It is the oracle the WebGL2 path is checked against, the headless
+// contract. With a thermal model (COD-258) the thermal step runs first and a
+// second dose buffer goes through the same deposit and blur. It is the oracle the WebGL2 path is checked against, the headless
 // path for Vitest, and the fallback when EXT_float_blend is missing.
 
 import type { CellRect, GridSpec, SimOutputs } from '../contract/index.ts'
@@ -8,6 +9,7 @@ import type { Kernel1D, SeparableKernel, SkewTaps } from './kernel.ts'
 import { coarseSetup, subGrid, type SimSetup } from './job.ts'
 import { respond } from './response.ts'
 import type { SampleStore } from './sample-store.ts'
+import { thermalFor, type ThermalResult } from './thermal.ts'
 
 export interface DepositBuffer {
   data: Float32Array
@@ -20,9 +22,17 @@ export interface DepositBuffer {
 /**
  * Deposit the first `n` samples into `rect` of the job grid as bilinear points:
  * each sample adds w·E·absorption / pitch² to the four nearest cell centres,
- * keeping only the weights that land inside the rect.
+ * keeping only the weights that land inside the rect. With `energies` (a
+ * thermal step's per-sample eAbs or eDose, J) those replace E·absorption.
  */
-export function depositCpu(store: SampleStore, n: number, grid: GridSpec, rect: CellRect, absorption: number): DepositBuffer {
+export function depositCpu(
+  store: SampleStore,
+  n: number,
+  grid: GridSpec,
+  rect: CellRect,
+  absorption: number,
+  energies: Float32Array | null = null,
+): DepositBuffer {
   const { width, height } = rect
   const data = new Float32Array(width * height)
   const inv = 1 / grid.pitchMm
@@ -31,7 +41,7 @@ export function depositCpu(store: SampleStore, n: number, grid: GridSpec, rect: 
   let expected = 0
   let clipped = 0
   for (let s = 0; s < n; s++) {
-    const e = xye[s * 3 + 2]! * absorption
+    const e = energies ? energies[s]! : xye[s * 3 + 2]! * absorption
     expected += e
     // Job-grid cell coordinates relative to cell centres, then shifted to the rect by whole cells.
     const fx = (xye[s * 3]! - grid.originXMm) * inv - 0.5
@@ -42,7 +52,7 @@ export function depositCpu(store: SampleStore, n: number, grid: GridSpec, rect: 
     const ay = fy - iy
     const x0 = ix - rect.x
     const y0 = iy - rect.y
-    const f = xye[s * 3 + 2]! * scale
+    const f = energies ? energies[s]! * inv * inv : xye[s * 3 + 2]! * scale
     let kept = 0
     for (let dy = 0; dy < 2; dy++) {
       const y = y0 + dy
@@ -145,6 +155,8 @@ export interface CpuRun {
   sampleCount: number
   tiles: CpuTileResult[]
   energy: StageEnergy
+  /** The thermal step's result, or null without a thermal model. */
+  thermal: ThermalResult | null
 }
 
 export interface CpuRunOptions {
@@ -155,18 +167,28 @@ export interface CpuRunOptions {
 export function simulateCpu(store: SampleStore, setup: SimSetup, options: CpuRunOptions = {}): CpuRun {
   const n = store.countUntil(options.timeCutoffS ?? Infinity)
   const { grid, plan, material, separable } = setup
+  const thermal = thermalFor(store, setup.machine, material, setup.thermalKernel, setup.thermalStep)
   const energy: StageEnergy = { expectedJ: 0, depositJ: 0, blurHJ: 0, blurVJ: 0, clippedJ: 0 }
   const tiles: CpuTileResult[] = []
   for (const tile of plan.tiles) {
     const { padded, core } = tile
-    const dep = depositCpu(store, n, grid, padded, material.absorption)
+    const dep = depositCpu(store, n, grid, padded, material.absorption, thermal?.eAbs)
     const { afterH, afterV } = blurCpu(dep.data, padded.width, padded.height, separable)
+    const doseV = thermal ? blurCpu(depositCpu(store, n, grid, padded, material.absorption, thermal.eDose).data, padded.width, padded.height, separable).afterV : null
     const local = { x: core.x - padded.x, y: core.y - padded.y, width: core.width, height: core.height }
     energy.depositJ += rectEnergyJ(dep.data, padded.width, local, grid.pitchMm)
     energy.blurHJ += rectEnergyJ(afterH, padded.width, local, grid.pitchMm)
     energy.blurVJ += rectEnergyJ(afterV, padded.width, local, grid.pitchMm)
     if (tiles.length === 0) energy.expectedJ = dep.expectedEnergyJ
-    const img = respond(material, afterV, padded.width, padded.height, local)
+    const spec0 = subGrid(grid, padded)
+    const img = respond(
+      material,
+      afterV,
+      padded.width,
+      padded.height,
+      local,
+      thermal && doseV ? { dose: doseV, result: thermal, originXMm: spec0.originXMm, originYMm: spec0.originYMm, pitchMm: grid.pitchMm } : null,
+    )
     const coreFluence = new Float32Array(core.width * core.height)
     for (let y = 0; y < core.height; y++)
       coreFluence.set(afterV.subarray((local.y + y) * padded.width + local.x, (local.y + y) * padded.width + local.x + core.width), y * core.width)
@@ -179,13 +201,15 @@ export function simulateCpu(store: SampleStore, setup: SimSetup, options: CpuRun
         color: img.color,
         depthMm: img.depthMm,
         verdict: img.verdict,
-        peakTemperatureK: null,
+        dose: img.dose,
+        peakTemperatureK: img.peakTemperatureK,
+        bulkTemperatureK: img.bulkTemperatureK,
       },
     })
   }
   // Clipped energy is meaningful on the whole job grid only (tiles clip by design).
   energy.clippedJ = energy.expectedJ - energy.depositJ
-  return { setup, sampleCount: n, tiles, energy }
+  return { setup, sampleCount: n, tiles, energy, thermal }
 }
 
 /** Coarse scrub preview: same function on the coarse grid with the widened kernel. */
@@ -201,6 +225,10 @@ export function stitch(run: CpuRun): SimOutputs {
   const color = new Uint8ClampedArray(w * grid.height * 4)
   const depthMm = new Float32Array(w * grid.height)
   const verdict = new Uint8Array(w * grid.height)
+  const thermal = run.thermal !== null
+  const dose = thermal ? new Float32Array(w * grid.height) : null
+  const peak = thermal ? new Float32Array(w * grid.height) : null
+  const bulk = thermal ? new Float32Array(w * grid.height) : null
   for (const { core, outputs } of run.tiles) {
     for (let y = 0; y < core.height; y++) {
       const dst = (core.y + y) * w + core.x
@@ -209,7 +237,10 @@ export function stitch(run: CpuRun): SimOutputs {
       depthMm.set(outputs.depthMm.subarray(src, src + core.width), dst)
       verdict.set(outputs.verdict.subarray(src, src + core.width), dst)
       color.set(outputs.color.subarray(src * 4, (src + core.width) * 4), dst * 4)
+      dose?.set(outputs.dose!.subarray(src, src + core.width), dst)
+      peak?.set(outputs.peakTemperatureK!.subarray(src, src + core.width), dst)
+      bulk?.set(outputs.bulkTemperatureK!.subarray(src, src + core.width), dst)
     }
   }
-  return { ...grid, fluence: { ...grid, data: fluence }, color, depthMm, verdict, peakTemperatureK: null }
+  return { ...grid, fluence: { ...grid, data: fluence }, color, depthMm, verdict, dose, peakTemperatureK: peak, bulkTemperatureK: bulk }
 }

@@ -14,6 +14,7 @@ import {
   Verdict,
   buildContractSchema,
   classifyFluence,
+  classifyThermal,
   decodeSampleBatch,
   gridPitchMm,
   planJobGrid,
@@ -53,6 +54,8 @@ const machine = loadMachineProfile(provisional('machine-10w-diode.json'))
 const wood = loadMaterialProfile(provisional('birch-ply.json'))
 const acrylic = loadMaterialProfile(provisional('black-cast-acrylic.json'))
 const anodized = loadMaterialProfile(provisional('black-anodized-aluminum.json'))
+/** Wood without the thermal step (COD-258), for tests of the fluence stages on jobs too big for a quick CPU thermal run. */
+const woodFluence: MaterialProfile = { ...wood, thermal: { kind: 'none' }, fireRisk: { kind: 'none' } }
 
 /** Round spot at the COD-251 spike's σ = 0.05 mm: coarser pitch, cheap CPU runs. */
 const roundSpot: MachineProfile = { ...machine, spot: { sigmaXMm: 0.05, sigmaYMm: 0.05, angleDeg: 0 } }
@@ -244,8 +247,9 @@ describe('response kinds', () => {
     const setup = setupJob(job.burnBounds!, machine, acrylic)
     const out = stitch(simulateCpu(store, setup))
     const counts = new Map<number, number>()
+    // The acrylic profile has a thermal model: the verdict reads dose and bulk temperature.
     for (let i = 0; i < out.verdict.length; i++) {
-      expect(out.verdict[i]).toBe(classifyFluence(acrylic, out.fluence.data[i]!))
+      expect(out.verdict[i]).toBe(classifyThermal(acrylic, out.dose![i]!, out.bulkTemperatureK![i]!))
       counts.set(out.verdict[i]!, (counts.get(out.verdict[i]!) ?? 0) + 1)
     }
     expect(counts.get(Verdict.Over)).toBeGreaterThan(0)
@@ -368,7 +372,7 @@ describe('spatial bins', () => {
 describe('progressive scrub', () => {
   const job = rasterJob({ x0Mm: 1, y0Mm: 1, widthMm: 20, heightMm: 10, intervalMm: 0.1, feedMmPerMin: 6000, s: 400 })
   const { store, plan } = storeFor(job, roundSpot)
-  const full = setupJob(job.burnBounds!, roundSpot, wood)
+  const full = setupJob(job.burnBounds!, roundSpot, woodFluence)
 
   it('coarse conserves fluence against full-res within 1% at every stage and cutoff', () => {
     for (const frac of [0.25, 0.6, 1]) {
