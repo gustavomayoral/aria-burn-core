@@ -1,0 +1,271 @@
+BURN-36 tile-budget bench on Windows / Intel Iris Xe, run 2026-11-03, branch burn-36 at f6f8285.
+Windows 11 Home 10.0.26300 · Edge 156.0.4314.58 · WebView2 Runtime 156.0.4314.58
+GPU Intel Iris Xe Graphics (0x9A49), ANGLE / Direct3D 11. Reports copied from the `pnpm bench` log.
+Each run was in a fresh process: Edge with a new --user-data-dir, WebView2 by restarting aria-burn
+(debug build at 9ee8c33, ARIA_BURN_BENCH_URL pointed at this repo's bench page).
+
+Summary
+- Pool step: every full TargetSet allocated, up to 9000² (1313 MiB) alone and beside a 4096² overview
+  (1756 MiB resident), in both Edge and WebView2. The size limit inferred in BURN-33 (~615–767 MB per
+  pool) does not exist: 6711² pools (the BURN-33 0x8cdd size) allocate fine.
+- WebView2, 5 µm job via fit() at the 768 MiB budget: with ~792 MiB of per-sample data resident, even a
+  993×995 pool fails with 0x8cdd and the context is lost (37442). Every later case failed because of
+  that. Edge passed the same sequence. Not explained by pool size; the per-sample buffers are the suspect.
+- Tile size vs speed (Edge, 5 µm job): 768 MiB budget → 21 × 21 tiles ≤ 995, first 10.1 s / second 6.9 s.
+  1536 MiB budget → 3 × 3 tiles ≤ 6720, first 31.7 s / second 20.5 s. Bigger tiles are ~3× slower here.
+  GPU_BUDGET_BYTES left at 768 MiB pending that decision.
+- ?auto=live in a fresh WebView2 process: the BURN-33 failure at the first spike-job refresh
+  (6010 × 614 tile) does not reproduce on burn-36. All three cases ran, gl error 0. But the 5 µm live job
+  reaches 210 tiles with a 10.3 s last refresh, and the thermal spike job's setup takes 1.2–3.0 s per refresh.
+
+=== 1. Edge, ?auto=tiles, budget 768 MiB (default) ===
+[auto=tiles]
+== Tile budget (BURN-36) ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+MAX_TEXTURE_SIZE 16384 · MAX_RENDERBUFFER_SIZE 16384
+gl error before: 0 · budget 768 MiB · tile side now 6882 · resident 0 MiB
+
+-- pool step: pool alone --
+   2048² pool    68 MiB · resident    68 MiB · ok 213.2 ms
+   3072² pool   153 MiB · resident   153 MiB · ok 289.8 ms
+   4096² pool   272 MiB · resident   272 MiB · ok 325.4 ms
+   4608² pool   344 MiB · resident   344 MiB · ok 485.4 ms
+   5120² pool   425 MiB · resident   425 MiB · ok 595.6 ms
+   5632² pool   514 MiB · resident   514 MiB · ok 760.1 ms
+   6016² pool   587 MiB · resident   587 MiB · ok 944.0 ms
+   6400² pool   664 MiB · resident   664 MiB · ok 879.9 ms
+   6711² pool   730 MiB · resident   730 MiB · ok 1252.1 ms
+   7168² pool   833 MiB · resident   833 MiB · ok 908.0 ms
+   7680² pool   956 MiB · resident   956 MiB · ok 1348.5 ms
+   8192² pool  1088 MiB · resident  1088 MiB · ok 1410.0 ms
+   8704² pool  1228 MiB · resident  1228 MiB · ok 1383.3 ms
+   9000² pool  1313 MiB · resident  1313 MiB · ok 1159.8 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+-- pool step: beside a 4096² overview (the burn view) --
+overview 4096² resident: 443 MiB
+   2048² pool    68 MiB · resident   511 MiB · ok 39.0 ms
+   3072² pool   153 MiB · resident   596 MiB · ok 73.3 ms
+   4096² pool   272 MiB · resident   715 MiB · ok 110.9 ms
+   4608² pool   344 MiB · resident   787 MiB · ok 161.9 ms
+   5120² pool   425 MiB · resident   868 MiB · ok 444.5 ms
+   5632² pool   514 MiB · resident   957 MiB · ok 514.0 ms
+   6016² pool   587 MiB · resident  1029 MiB · ok 643.4 ms
+   6400² pool   664 MiB · resident  1107 MiB · ok 463.9 ms
+   6711² pool   730 MiB · resident  1173 MiB · ok 685.9 ms
+   7168² pool   833 MiB · resident  1276 MiB · ok 518.6 ms
+   7680² pool   956 MiB · resident  1399 MiB · ok 738.9 ms
+   8192² pool  1088 MiB · resident  1531 MiB · ok 758.7 ms
+   8704² pool  1228 MiB · resident  1671 MiB · ok 571.8 ms
+   9000² pool  1313 MiB · resident  1756 MiB · ok 556.3 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+suggested GPU budget: ~1756 MiB (largest pool beside the overview, plus the overview)
+
+-- 5 µm 100 mm job, planned with GlSim.fit() --
+samples 19,688,836 · grid 20012 × 20040 · tiles 21 × 21 (padded ≤ 995) · resident before the pool 792 MiB
+first 10062.1 ms · second 6943.1 ms · ran 441 tiles (padded ≤ 995) · replanned false · failed sides none
+resident after: 808 MiB · context lost: false
+
+-- forced allocation failure: spike job, pools over 2048² refused --
+setup tile 6020 → ran 9 tiles ≤ 2027 · failed 4114 · learned cap 2909
+  after fallback expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4555e+3 (1.0000) PASS
+
+-- context loss and recovery (WEBGL_lose_context) --
+webglcontextlost: waiting for restore
+webglcontextrestored: rebuilt GlSim (tile side cap 9000)
+lost event true · run on lost context threw GlContextLostError · restored true · re-run after rebuild true · losses seen 1
+
+PASS  5 µm job renders without context loss
+PASS  forced failure falls back to smaller tiles
+PASS  context loss recovers
+gl error: 0
+
+=== 2. WebView2, ?auto=tiles, budget 768 MiB (default) ===
+[auto=tiles]
+== Tile budget (BURN-36) ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+MAX_TEXTURE_SIZE 16384 · MAX_RENDERBUFFER_SIZE 16384
+gl error before: 0 · budget 768 MiB · tile side now 6882 · resident 0 MiB
+
+-- pool step: pool alone --
+   2048² pool    68 MiB · resident    68 MiB · ok 77.4 ms
+   3072² pool   153 MiB · resident   153 MiB · ok 140.8 ms
+   4096² pool   272 MiB · resident   272 MiB · ok 203.8 ms
+   4608² pool   344 MiB · resident   344 MiB · ok 527.4 ms
+   5120² pool   425 MiB · resident   425 MiB · ok 741.5 ms
+   5632² pool   514 MiB · resident   514 MiB · ok 767.0 ms
+   6016² pool   587 MiB · resident   587 MiB · ok 831.2 ms
+   6400² pool   664 MiB · resident   664 MiB · ok 291.8 ms
+   6711² pool   730 MiB · resident   730 MiB · ok 366.6 ms
+   7168² pool   833 MiB · resident   833 MiB · ok 212.8 ms
+   7680² pool   956 MiB · resident   956 MiB · ok 232.2 ms
+   8192² pool  1088 MiB · resident  1088 MiB · ok 259.8 ms
+   8704² pool  1228 MiB · resident  1228 MiB · ok 256.8 ms
+   9000² pool  1313 MiB · resident  1313 MiB · ok 268.7 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+-- pool step: beside a 4096² overview (the burn view) --
+overview 4096² resident: 443 MiB
+   2048² pool    68 MiB · resident   511 MiB · ok 12.4 ms
+   3072² pool   153 MiB · resident   596 MiB · ok 24.5 ms
+   4096² pool   272 MiB · resident   715 MiB · ok 39.5 ms
+   4608² pool   344 MiB · resident   787 MiB · ok 53.4 ms
+   5120² pool   425 MiB · resident   868 MiB · ok 119.6 ms
+   5632² pool   514 MiB · resident   957 MiB · ok 131.7 ms
+   6016² pool   587 MiB · resident  1029 MiB · ok 243.7 ms
+   6400² pool   664 MiB · resident  1107 MiB · ok 200.2 ms
+   6711² pool   730 MiB · resident  1173 MiB · ok 271.0 ms
+   7168² pool   833 MiB · resident  1276 MiB · ok 213.6 ms
+   7680² pool   956 MiB · resident  1399 MiB · ok 299.3 ms
+   8192² pool  1088 MiB · resident  1531 MiB · ok 319.1 ms
+   8704² pool  1228 MiB · resident  1671 MiB · ok 298.2 ms
+   9000² pool  1313 MiB · resident  1756 MiB · ok 315.2 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+suggested GPU budget: ~1756 MiB (largest pool beside the overview, plus the overview)
+
+-- 5 µm 100 mm job, planned with GlSim.fit() --
+samples 19,688,836 · grid 20012 × 20040 · tiles 21 × 21 (padded ≤ 995) · resident before the pool 792 MiB
+FAILED: GlAllocationError: tile pool 993×995: framebuffer incomplete: 0x8cdd
+
+-- forced allocation failure: spike job, pools over 2048² refused --
+FAILED: Error: shader compile: 
+
+-- context loss and recovery (WEBGL_lose_context) --
+webglcontextlost: waiting for restore
+re-run FAILED: GlContextLostError: WebGL context lost
+lost event true · run on lost context threw GlContextLostError · restored false · re-run after rebuild false · losses seen 1
+
+FAIL  5 µm job renders without context loss
+FAIL  forced failure falls back to smaller tiles
+FAIL  context loss recovers
+gl error: 37442
+
+=== 3. WebView2, ?auto=live, fresh app process ===
+[auto=live]
+== Live job (BURN-33): cost of one refresh as the stream grows ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 0
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |    589,824 |     1 | 1194.5 ms |    0.1 ms |  50.2 ms | 1244.8 ms | 2489.6 ms
+    20 % |  1,179,648 |     1 | 1391.4 ms |    1.7 ms |  84.6 ms | 1477.7 ms | 2955.4 ms
+    30 % |  1,769,472 |     1 | 1563.6 ms |    1.5 ms | 110.3 ms | 1675.4 ms | 3350.8 ms
+    40 % |  2,359,296 |     1 | 2230.9 ms |    2.5 ms | 167.3 ms | 2400.7 ms | 4801.4 ms
+    50 % |  2,965,504 |     1 | 2287.7 ms |    1.5 ms | 148.4 ms | 2437.6 ms | 4875.2 ms
+    60 % |  3,555,328 |     1 | 1721.4 ms |    1.3 ms | 146.3 ms | 1869.0 ms | 3738.0 ms
+    70 % |  4,145,152 |     2 | 3209.4 ms |    2.6 ms | 475.9 ms | 3687.9 ms | 7375.8 ms
+    80 % |  4,734,976 |     2 | 2732.9 ms |    2.0 ms | 235.4 ms | 2970.3 ms | 5940.6 ms
+    90 % |  5,324,800 |     4 | 2612.8 ms |    1.9 ms | 302.2 ms | 2916.9 ms | 5833.8 ms
+   100 % |  5,905,951 |     4 | 2973.7 ms |    2.2 ms | 334.1 ms | 3310.0 ms | 6620.0 ms
+refresh: min 1244.8 ms / median 2437.6 ms / max 3687.9 ms · last 3310.0 ms → the app's next refresh waits 6620.0 ms
+gl error after replay: 0
+
+== spike job, fluence only (no thermal step) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |    589,824 |     1 |  11.4 ms |    0.0 ms |  63.2 ms |  74.6 ms | 149.2 ms
+    20 % |  1,179,648 |     1 |   2.8 ms |    2.3 ms |  71.4 ms |  76.5 ms | 153.0 ms
+    30 % |  1,769,472 |     1 |   2.9 ms |    2.5 ms |  79.8 ms |  85.2 ms | 170.4 ms
+    40 % |  2,359,296 |     1 |  22.5 ms |    2.6 ms | 117.4 ms | 142.5 ms | 285.0 ms
+    50 % |  2,965,504 |     1 |   2.7 ms |    2.4 ms | 143.5 ms | 148.6 ms | 297.2 ms
+    60 % |  3,555,328 |     1 |   3.4 ms |    2.9 ms | 199.4 ms | 205.7 ms | 411.4 ms
+    70 % |  4,145,152 |     1 |   3.2 ms |    2.5 ms | 247.6 ms | 253.3 ms | 506.6 ms
+    80 % |  4,734,976 |     2 |   3.7 ms |    3.2 ms | 263.9 ms | 270.8 ms | 541.6 ms
+    90 % |  5,324,800 |     4 |   3.4 ms |    2.8 ms | 294.1 ms | 300.3 ms | 600.6 ms
+   100 % |  5,905,951 |     4 |   3.8 ms |    3.3 ms | 406.1 ms | 413.2 ms | 826.4 ms
+refresh: min 74.6 ms / median 205.7 ms / max 413.2 ms · last 413.2 ms → the app's next refresh waits 826.4 ms
+gl error after replay: 0
+
+== provisional diode, 5 µm pitch, 100 × 100 mm raster, birch (thermal) ==
+batches 1202 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+    10 % |  1,966,080 |     4 | 2232.2 ms |    0.1 ms | 161.9 ms | 2394.2 ms | 4788.4 ms
+    20 % |  3,932,160 |     4 | 2048.2 ms |    4.1 ms | 196.5 ms | 2248.8 ms | 4497.6 ms
+    30 % |  5,914,624 |     8 | 2519.5 ms |    1.9 ms | 284.5 ms | 2805.9 ms | 5611.8 ms
+    40 % |  7,880,704 |    10 | 3097.2 ms |   14.3 ms | 496.7 ms | 3608.2 ms | 7216.4 ms
+    50 % |  9,846,784 |    15 | 4551.6 ms |   12.4 ms | 439.7 ms | 5003.7 ms | 10007.4 ms
+    60 % | 11,812,864 |    24 | 4238.2 ms |    2.7 ms | 653.4 ms | 4894.3 ms | 9788.6 ms
+    70 % | 13,778,944 |    35 | 7034.1 ms |    2.1 ms | 787.1 ms | 7823.3 ms | 15646.6 ms
+    80 % | 15,761,408 |    63 | 6934.5 ms |    2.7 ms | 928.5 ms | 7865.7 ms | 15731.4 ms
+    90 % | 17,727,488 |   110 | 7443.3 ms |    2.5 ms | 1048.3 ms | 8494.1 ms | 16988.2 ms
+   100 % | 19,688,836 |   210 | 9334.7 ms |    2.5 ms | 1001.3 ms | 10338.5 ms | 20677.0 ms
+refresh: min 2248.8 ms / median 5003.7 ms / max 10338.5 ms · last 10338.5 ms → the app's next refresh waits 20677.0 ms
+gl error after replay: 0
+gl error: 0
+
+=== 4. Edge, ?auto=tiles, GPU_BUDGET_BYTES temporarily set to 1536 MiB (not committed) ===
+[auto=tiles]
+== Tile budget (BURN-36) ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+MAX_TEXTURE_SIZE 16384 · MAX_RENDERBUFFER_SIZE 16384
+gl error before: 0 · budget 1536 MiB · tile side now 9000 · resident 0 MiB
+
+-- pool step: pool alone --
+   2048² pool    68 MiB · resident    68 MiB · ok 40.4 ms
+   3072² pool   153 MiB · resident   153 MiB · ok 28.8 ms
+   4096² pool   272 MiB · resident   272 MiB · ok 41.2 ms
+   4608² pool   344 MiB · resident   344 MiB · ok 44.3 ms
+   5120² pool   425 MiB · resident   425 MiB · ok 86.9 ms
+   5632² pool   514 MiB · resident   514 MiB · ok 116.4 ms
+   6016² pool   587 MiB · resident   587 MiB · ok 108.5 ms
+   6400² pool   664 MiB · resident   664 MiB · ok 182.7 ms
+   6711² pool   730 MiB · resident   730 MiB · ok 190.3 ms
+   7168² pool   833 MiB · resident   833 MiB · ok 416.6 ms
+   7680² pool   956 MiB · resident   956 MiB · ok 592.4 ms
+   8192² pool  1088 MiB · resident  1088 MiB · ok 1634.7 ms
+   8704² pool  1228 MiB · resident  1228 MiB · ok 1862.1 ms
+   9000² pool  1313 MiB · resident  1313 MiB · ok 1968.4 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+-- pool step: beside a 4096² overview (the burn view) --
+overview 4096² resident: 443 MiB
+   2048² pool    68 MiB · resident   511 MiB · ok 102.9 ms
+   3072² pool   153 MiB · resident   596 MiB · ok 228.0 ms
+   4096² pool   272 MiB · resident   715 MiB · ok 215.7 ms
+   4608² pool   344 MiB · resident   787 MiB · ok 220.3 ms
+   5120² pool   425 MiB · resident   868 MiB · ok 465.3 ms
+   5632² pool   514 MiB · resident   957 MiB · ok 685.3 ms
+   6016² pool   587 MiB · resident  1029 MiB · ok 615.6 ms
+   6400² pool   664 MiB · resident  1107 MiB · ok 848.6 ms
+   6711² pool   730 MiB · resident  1173 MiB · ok 774.7 ms
+   7168² pool   833 MiB · resident  1276 MiB · ok 975.1 ms
+   7680² pool   956 MiB · resident  1399 MiB · ok 1381.7 ms
+   8192² pool  1088 MiB · resident  1531 MiB · ok 1498.0 ms
+   8704² pool  1228 MiB · resident  1671 MiB · ok 1648.1 ms
+   9000² pool  1313 MiB · resident  1756 MiB · ok 1432.9 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+suggested GPU budget: ~1756 MiB (largest pool beside the overview, plus the overview)
+
+-- 5 µm 100 mm job, planned with GlSim.fit() --
+samples 19,688,836 · grid 20012 × 20040 · tiles 3 × 3 (padded ≤ 6720) · resident before the pool 792 MiB
+first 31689.5 ms · second 20477.0 ms · ran 9 tiles (padded ≤ 6720) · replanned false · failed sides none
+resident after: 1523 MiB · context lost: false
+
+-- forced allocation failure: spike job, pools over 2048² refused --
+setup tile 6020 → ran 9 tiles ≤ 2027 · failed 6020, 4256 · learned cap 3009
+  after fallback expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4555e+3 (1.0000) PASS
+
+-- context loss and recovery (WEBGL_lose_context) --
+webglcontextlost: waiting for restore
+webglcontextrestored: rebuilt GlSim (tile side cap 9000)
+lost event true · run on lost context threw GlContextLostError · restored true · re-run after rebuild true · losses seen 1
+
+PASS  5 µm job renders without context loss
+PASS  forced failure falls back to smaller tiles
+PASS  context loss recovers
+gl error: 0
