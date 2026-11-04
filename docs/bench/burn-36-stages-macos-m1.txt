@@ -1,0 +1,31 @@
+[auto=stages]
+== Upload stages (BURN-36): 5 µm 100 mm job, one GPU step at a time ==
+user agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/4.16336.0 Chrome/152.0.7977.167 Safari/537.36
+gl renderer: ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)
+gl error before: 0 · budget 1536 MiB
+Each line: wall time incl. CPU work, finish + 1-pixel readback · resident after · gl error · context lost
+SLOW marks steps over 1.8 s of wall time; Windows resets the GPU when one GPU command runs past ~2 s (TDR),
+so a slow step that then loses the context is the suspect. Check Event Viewer for display event 4101.
+samples 19,688,836 (225 MiB xye) · CPU sampler 786.5 ms · store 420.9 ms
+
+-- fluence only (no thermal step) --
+  1. upload samples (skipped if on GPU)    93.6 ms · resident   225 MiB · gl error 0 · lost false
+  2. thermal step                        0.1 ms · resident   225 MiB · gl error 0 · lost false
+  3. upload bins (bufferData)         1683.5 ms · resident   526 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     1.4 ms · resident   968 MiB · gl error 0 · lost false
+  5. tile pool 1024²                    79.2 ms · resident   985 MiB · gl error 0 · lost false
+  6. one 1024² region run               31.0 ms · resident   985 MiB · gl error 0 · lost false
+  7. full run, 16 tiles ≤ 5050        1735.6 ms · resident  1381 MiB · gl error 0 · lost false
+
+-- birch with the thermal step --
+  1. upload samples (skipped if on GPU)     0.0 ms · resident   225 MiB · gl error 0 · lost false
+  2. thermal step                     6837.1 ms · resident   381 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  3. upload bins (bufferData)         2369.8 ms · resident   682 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  4. overview 4096² (burn view size)     2.0 ms · resident  1124 MiB · gl error 0 · lost false
+  5. tile pool 1024²                    17.9 ms · resident  1141 MiB · gl error 0 · lost false
+  6. one 1024² region run               27.5 ms · resident  1141 MiB · gl error 0 · lost false
+  7. full run, 20 tiles ≤ 5043        1697.0 ms · resident  1455 MiB · gl error 0 · lost false
+
+fluence only (no thermal step): all steps ok
+birch with the thermal step: all steps ok
+gl error: 0

@@ -5,7 +5,11 @@ export function compile(gl: WebGL2RenderingContext, type: number, src: string): 
   const s = gl.createShader(type)!
   gl.shaderSource(s, src)
   gl.compileShader(s)
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(`shader compile: ${gl.getShaderInfoLog(s)}`)
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    // On a context that died but isn't flagged yet, compiles fail with an empty log (BURN-36, WebView2).
+    if (contextGone(gl)) throw new GlContextLostError('WebGL context lost (shader compile failed)')
+    throw new Error(`shader compile: ${gl.getShaderInfoLog(s)}`)
+  }
   return s
 }
 
@@ -21,7 +25,10 @@ export class Program {
     gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vs))
     gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs))
     gl.linkProgram(p)
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`program link: ${gl.getProgramInfoLog(p)}`)
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      if (contextGone(gl)) throw new GlContextLostError('WebGL context lost (program link failed)')
+      throw new Error(`program link: ${gl.getProgramInfoLog(p)}`)
+    }
     this.program = p
   }
   use(): this {
@@ -97,6 +104,22 @@ export function assertContext(gl: WebGL2RenderingContext): void {
   if (gl.isContextLost()) throw new GlContextLostError()
 }
 
+const GL_CONTEXT_LOST_WEBGL = 0x9242
+
+/**
+ * Whether the context is gone, for use after something already failed.
+ * isContextLost() only turns true once the browser has processed the loss,
+ * which can be after the failing call (BURN-36: WebView2 reported 0x8cdd
+ * first). finish() makes the loss surface, and getError() then reports
+ * CONTEXT_LOST_WEBGL. Both are sync points and getError clears the error
+ * flag, so only call this on a failure path.
+ */
+export function contextGone(gl: WebGL2RenderingContext): boolean {
+  if (gl.isContextLost()) return true
+  gl.finish()
+  return gl.getError() === GL_CONTEXT_LOST_WEBGL || gl.isContextLost()
+}
+
 const GL_R8UI = 0x8232
 const GL_R32F = 0x822e
 const GL_RG32F = 0x8230
@@ -168,9 +191,10 @@ export function storage(gl: WebGL2RenderingContext, levels: number, internal: nu
   gl.bindTexture(gl.TEXTURE_2D, t)
   gl.texStorage2D(gl.TEXTURE_2D, levels, internal, w, h)
   const err = gl.getError()
-  if (err === GL_OUT_OF_MEMORY || gl.isContextLost()) {
+  if (err === GL_CONTEXT_LOST_WEBGL || gl.isContextLost()) throw new GlContextLostError(`WebGL context lost allocating a ${w}×${h} texture`)
+  if (err === GL_OUT_OF_MEMORY) {
     gl.deleteTexture(t)
-    assertContext(gl)
+    if (contextGone(gl)) throw new GlContextLostError(`WebGL context lost allocating a ${w}×${h} texture`)
     throw new GlAllocationError(`out of memory allocating ${w}×${h} texture`, bytes)
   }
   ledger(gl).set(t, bytes)
@@ -195,8 +219,9 @@ export function framebuffer(gl: WebGL2RenderingContext, ...attachments: WebGLTex
   if (status !== gl.FRAMEBUFFER_COMPLETE) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     gl.deleteFramebuffer(fbo)
-    assertContext(gl)
     const msg = `framebuffer incomplete: 0x${status.toString(16)}`
+    // ANGLE/D3D11 also reports UNSUPPORTED when the device was reset; that's a lost context, not a size limit.
+    if (contextGone(gl)) throw new GlContextLostError(`WebGL context lost (${msg})`)
     // Unsupported here means the driver refused the size (Iris Xe, BURN-33); anything else is a bug.
     if (status === GL_FRAMEBUFFER_UNSUPPORTED) throw new GlAllocationError(msg)
     throw new Error(msg)

@@ -6,8 +6,8 @@
 // Everything on the GPU is derived (samples re-upload, targets reallocate,
 // overviews re-composite), so recovery is: drop the old GlSim / GlOverview /
 // GlBurnView, build new ones on the restored context, re-run. A new GlSim
-// starts from the tile side learned before the loss (gl-sim.ts), so the run
-// that lost the context isn't repeated at the same size.
+// keeps any tile side learned from real allocation failures (gl-sim.ts); a
+// context loss itself teaches none, since on Iris Xe it isn't a size limit.
 
 export type ContextState = 'ok' | 'lost' | 'restored'
 

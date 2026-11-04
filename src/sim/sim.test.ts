@@ -34,6 +34,7 @@ import {
   CellReader,
   GlAllocationError,
   LiveJob,
+  contextGone,
   SampleBins,
   SampleStore,
   blurCpu,
@@ -471,6 +472,27 @@ describe('WebGL context loss (BURN-36)', () => {
     watch.stop()
     canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
     expect(seen).toEqual(['lost', 'restored'])
+  })
+
+  it('sees a loss the browser has not flagged yet, after finish, via CONTEXT_LOST_WEBGL', () => {
+    const fake = (error: number, flagged = false) => {
+      let finished = false
+      return {
+        gl: {
+          isContextLost: () => flagged,
+          finish: () => void (finished = true),
+          getError: () => (finished ? error : 0),
+        } as unknown as WebGL2RenderingContext,
+        finished: () => finished,
+      }
+    }
+    const lost = fake(0x9242)
+    expect(contextGone(lost.gl)).toBe(true)
+    expect(lost.finished()).toBe(true)
+    expect(contextGone(fake(0).gl)).toBe(false)
+    // An out-of-memory error is a refusal, not a loss.
+    expect(contextGone(fake(0x0505).gl)).toBe(false)
+    expect(contextGone(fake(0, true).gl)).toBe(true)
   })
 })
 

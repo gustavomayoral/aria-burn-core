@@ -622,6 +622,86 @@ async function runTiles(): Promise<void> {
 }
 ;(window as unknown as { __runTiles: typeof runTiles }).__runTiles = runTiles
 
+/**
+ * BURN-36 follow-up: which step of a 5 µm run kills the context in WebView2
+ * on Iris Xe. Each GPU step runs alone, then finish + a 1-pixel readback, then
+ * a context check, so the first step that loses the context (or runs near
+ * Windows' ~2 s GPU timeout) is named. Fluence-only first, then with the
+ * thermal step. Run each browser in a fresh process.
+ */
+async function runStages(): Promise<void> {
+  lines.length = 0
+  const results: Record<string, string> = {}
+  log('== Upload stages (BURN-36): 5 µm 100 mm job, one GPU step at a time ==')
+  log(`user agent: ${navigator.userAgent}`)
+  log(`gl renderer: ${sim.caps.renderer}`)
+  log(`gl error before: ${gl!.getError()} · budget ${mb(sim.gpuBudgetBytes)}`)
+  log('Each line: wall time incl. CPU work, finish + 1-pixel readback · resident after · gl error · context lost')
+  log('SLOW marks steps over 1.8 s of wall time; Windows resets the GPU when one GPU command runs past ~2 s (TDR),')
+  log('so a slow step that then loses the context is the suspect. Check Event Viewer for display event 4101.')
+  const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), machine)
+  log(`samples ${job.store.count.toLocaleString()} (${mb(job.store.count * 12)} xye) · CPU sampler ${ms(job.samplerMs)} · store ${ms(job.storeMs)}`)
+
+  const runCase = async (label: string, material: MaterialProfile): Promise<void> => {
+    log()
+    log(`-- ${label} --`)
+    sim.releaseTargets()
+    const big = new GlOverview(gl!)
+    const setup = setupJob(job.store.burnBounds!, machine, material)
+    const stage = async (name: string, fn: () => void): Promise<boolean> => {
+      const t0 = performance.now()
+      let err = ''
+      try {
+        fn()
+        sim.sync()
+      } catch (e) {
+        err = String(e)
+      }
+      const t = performance.now() - t0
+      const glErr = gl!.getError()
+      const lost = gl!.isContextLost()
+      log(`  ${name.padEnd(34)} ${ms(t).padStart(10)} · resident ${mb(ledger(gl!).total).padStart(9)} · gl error ${glErr} · lost ${lost}${t > 1800 ? ' · SLOW (> 1.8 s wall)' : ''}${err ? ` · ${err}` : ''}`)
+      await nextFrame()
+      const ok = !lost && !err && glErr === 0
+      if (!ok) results[label] = `failed at: ${name}`
+      return ok
+    }
+    const steps: [string, () => void][] = [
+      ['1. upload samples (skipped if on GPU)', () => sim.syncSamples(job.store)],
+      ['2. thermal step', () => void sim.thermal(job.store, setup)],
+      ['3. upload bins (bufferData)', () => void sim.ensureBins(job.store, setup)],
+      ['4. overview 4096² (burn view size)', () => big.resize(setup.grid.width, setup.grid.height)],
+      ['5. tile pool 1024²', () => void sim.probePool(1024)],
+      ['6. one 1024² region run', () => void sim.run(job.store, setup, { region: { x: 9500, y: 9500, width: 1000, height: 1000 } })],
+    ]
+    for (const [name, fn] of steps) if (!(await stage(name, fn))) break
+    if (!results[label]) {
+      const fitted = sim.fit(job.store, setup, big)
+      const ok = await stage(`7. full run, ${fitted.plan.tiles.length} tiles ≤ ${planSide(fitted.plan)}`, () => void sim.run(job.store, fitted, { overview: big }))
+      if (ok) results[label] = 'all steps ok'
+    }
+    if (gl!.isContextLost()) {
+      log('  waiting for the context to come back…')
+      const back = await waitFor((f) => (restored = f), 15000)
+      log(back ? '  restored and rebuilt' : '  NOT restored within 15 s: later cases are skipped')
+      if (!back) throw new GlContextLostError()
+    } else {
+      big.dispose()
+      sim.releaseTargets()
+    }
+  }
+  try {
+    await runCase('fluence only (no thermal step)', birchFluence)
+    await runCase('birch with the thermal step', birch)
+  } catch (e) {
+    log(`STOPPED: ${String(e)}`)
+  }
+  log()
+  for (const [k, v] of Object.entries(results)) log(`${k}: ${v}`)
+  log(`gl error: ${gl!.getError()}`)
+  ;(window as unknown as { __benchStages: string }).__benchStages = lines.join('\n')
+}
+
 /** Quick loop for tuning: thermal step only, on the spike job (store cached across calls). */
 let costStore: ReturnType<typeof storeFor> | null = null
 async function thermalCost(runs = 2): Promise<string> {
@@ -642,15 +722,16 @@ document.getElementById('thermal')!.addEventListener('click', () => void runTher
 ;(window as unknown as { __runThermal: typeof runThermal }).__runThermal = runThermal
 document.getElementById('live')!.addEventListener('click', () => void runLive().catch((e) => log(`ERROR ${String(e)}`)))
 ;(window as unknown as { __runLive: typeof runLive }).__runLive = runLive
+document.getElementById('stages')!.addEventListener('click', () => void runStages().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('tiles')!.addEventListener('click', () => void runTiles().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('run')!.addEventListener('click', () => void run().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('fine')!.addEventListener('click', () => void runFine().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))
 ;(window as unknown as { __runBench: typeof run; __runFine: typeof runFine }).__runBench = run
 
-/** ?auto=live (or run, fine, thermal, tiles; comma-separated): run on load and POST each report to the bench server. */
+/** ?auto=live (or run, fine, thermal, tiles, stages; comma-separated): run on load and POST each report to the bench server. */
 async function autoRun(names: string[]): Promise<void> {
-  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles }
+  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages }
   for (const name of names) {
     const fn = runs[name]
     if (!fn) {

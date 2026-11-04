@@ -23,12 +23,13 @@ import type { SampleStore } from '../sample-store.ts'
 import { defaultThermalStep, peakTemperatureModel, thermalFor, type ThermalResult } from '../thermal.ts'
 import { GlPeakTemperatureStep } from './gl-thermal.ts'
 import { PER_SAMPLE_WIDTH } from './thermal-shaders.ts'
-import { planSide, replan, shrinkSide, tileSide, withTileFallback } from '../tile-budget.ts'
+import { planSide, replan, tileSide, withTileFallback } from '../tile-budget.ts'
 import {
   GlAllocationError,
   GlContextLostError,
   Program,
   assertContext,
+  contextGone,
   deleteTexture,
   framebuffer,
   ledger,
@@ -186,9 +187,9 @@ class TargetSet {
 }
 
 /**
- * Tile sides learned per GPU (renderer string) after an allocation failed, so
- * a GlSim rebuilt after a context loss starts below the size that killed it.
- * Lives for the page; a reload starts from the budget again.
+ * Tile sides learned per GPU (renderer string) from real allocation failures,
+ * so a GlSim rebuilt later in the page (e.g. after a context loss) starts at
+ * the size that worked. Lives for the page; a reload starts from the budget.
  */
 const learnedTileSides = new Map<string, number>()
 
@@ -369,8 +370,6 @@ export class GlSim {
   /** Largest tile side known to allocate on this GPU (shrinks after a failure). */
   maxTileSide: number
   private readonly failPoolAboveBytes: number
-  /** Size of the last pool that failed to allocate, for the context-loss path. */
-  private failedPoolBytes = 0
 
   /**
    * `forceCpuDeposit` exercises the no-EXT_float_blend fallback on hardware that has it.
@@ -505,13 +504,7 @@ export class GlSim {
     const ph = Math.max(h, cur?.height ?? 0)
     if (tilePoolBytes(pw, ph) > this.failPoolAboveBytes)
       throw new GlAllocationError(`tile pool ${pw}×${ph}: refused by failPoolAboveBytes`, tilePoolBytes(pw, ph))
-    let next: TargetSet
-    try {
-      next = new TargetSet(this.gl, pw, ph)
-    } catch (e) {
-      this.failedPoolBytes = tilePoolBytes(pw, ph)
-      throw e
-    }
+    const next = new TargetSet(this.gl, pw, ph)
     this.pools.set(kind, next)
     return next
   }
@@ -651,8 +644,12 @@ export class GlSim {
     if (this.active && binned) gl.disableVertexAttribArray(1)
   }
 
-  /** Spatial bins of the store for this grid's pitch, uploaded (rebuilt when the store or pitch changed). */
-  private ensureBins(store: SampleStore, setup: SimSetup): SampleBins {
+  /**
+   * Spatial bins of the store for this grid's pitch, uploaded (rebuilt when
+   * the store or pitch changed). Runs do this themselves; public for the
+   * stage diagnostics bench.
+   */
+  ensureBins(store: SampleStore, setup: SimSetup): SampleBins {
     const gl = this.gl
     const bucketMm = BIN_CELLS * setup.grid.pitchMm
     if (!this.bins || this.binStore !== store || this.bins.version !== store.version || this.bins.bucketMm !== bucketMm) {
@@ -869,7 +866,7 @@ export class GlSim {
           return this.runPlan(store, setup, plan, poolKind, options)
         },
         (e) => {
-          if (!(e instanceof GlAllocationError) || this.gl.isContextLost()) return false
+          if (!(e instanceof GlAllocationError) || contextGone(this.gl)) return false
           this.active = null
           return true
         },
@@ -889,27 +886,18 @@ export class GlSim {
   }
 
   /**
-   * Run, turning a context lost mid-run into GlContextLostError. If an
-   * allocation failure took the context with it, the side that failed is
-   * remembered so the GlSim rebuilt on the restored context starts smaller.
+   * Run, turning a context lost mid-run (including one the browser hasn't
+   * flagged yet) into GlContextLostError. A lost context teaches no tile
+   * side: on Iris Xe / WebView2 it came with tiles far below the size the
+   * same GPU allocates, so it isn't a size limit (BURN-36).
    */
   private guard<T>(fn: () => T): T {
-    this.failedPoolBytes = 0
     try {
       return fn()
     } catch (e) {
       this.active = null
-      if (this.gl.isContextLost()) {
-        if (this.failedPoolBytes > 0) {
-          const side = Math.floor(Math.sqrt(this.failedPoolBytes / tilePoolBytes(1, 1)))
-          this.failedPoolBytes = 0
-          if (side > 0) {
-            this.maxTileSide = Math.min(this.maxTileSide, shrinkSide(side))
-            this.learn()
-          }
-        }
-        throw e instanceof GlContextLostError ? e : new GlContextLostError(`WebGL context lost: ${String(e)}`)
-      }
+      if (e instanceof GlContextLostError) throw e
+      if (contextGone(this.gl)) throw new GlContextLostError(`WebGL context lost: ${String(e)}`)
       throw e
     }
   }
