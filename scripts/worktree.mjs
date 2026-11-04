@@ -221,7 +221,15 @@ function finish() {
     const ignoredDirs = read(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'], root)
     for (const dir of ignoredDirs.split('\n').filter((d) => /(^|\/)node_modules\/$/.test(d)))
       rmSync(join(root, dir), { recursive: true, force: true })
-    run('git', ['worktree', 'remove', root], mainRoot)
+    process.chdir(mainRoot)
+    try {
+      run('git', ['worktree', 'remove', root], mainRoot)
+    } catch (error) {
+      // Windows also won't delete a directory that is a process's cwd, such as the shell finish
+      // ran from. By then git has emptied and unregistered the worktree; only the directory is left.
+      if (isWorktree(root)) throw error
+      console.warn(`wt: ${root} is empty but in use; delete it after you leave it`)
+    }
   }
   step(
     'remove the worktree',
