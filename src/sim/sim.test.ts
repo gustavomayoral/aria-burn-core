@@ -572,7 +572,7 @@ describe('tile budget by GPU bytes (BURN-36)', () => {
     expect(untiled.grid).toEqual(setup.grid)
     const d = compareRuns(untiled, stitch(simulateCpu(live.store, untiled)), stitch(simulateCpu(live.store, { ...setup, plan: smaller })))
     expect(d.maxRelF).toBeLessThan(1e-5)
-  })
+  }, 30_000) // ~5.9 s alone on Iris Xe laptops
 })
 
 describe('WebGL context loss (BURN-36)', () => {

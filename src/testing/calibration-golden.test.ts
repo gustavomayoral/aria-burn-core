@@ -59,5 +59,5 @@ describe.each([
     const { width, height } = setup.grid
     const r = compareRgbaGolden(name, { width, height, data: flipRows(out.color, width, height) })
     expect(r.pass, r.message).toBe(true)
-  }, 60_000)
+  }, 180_000) // the small birch grid takes ~77 s alone on Iris Xe laptops
 })
