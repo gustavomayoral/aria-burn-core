@@ -167,7 +167,7 @@ export interface CpuRunOptions {
 export function simulateCpu(store: SampleStore, setup: SimSetup, options: CpuRunOptions = {}): CpuRun {
   const n = store.countUntil(options.timeCutoffS ?? Infinity)
   const { grid, plan, material, separable } = setup
-  const thermal = thermalFor(store, setup.machine, material, setup.thermalKernel, setup.thermalStep)
+  const thermal = thermalFor(store, setup.machine, material, setup.thermalKernel, setup.thermalStep, setup.thermalPlanning)
   const energy: StageEnergy = { expectedJ: 0, depositJ: 0, blurHJ: 0, blurVJ: 0, clippedJ: 0 }
   const tiles: CpuTileResult[] = []
   for (const tile of plan.tiles) {

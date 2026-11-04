@@ -29,12 +29,17 @@ import {
   binFraction,
   cachedFlashTable,
   defaultThermalStep,
+  fillBinStarts,
+  freshStaticsMemo,
   peakTemperatureModel,
+  staticsRange,
   thermalPlanFor,
-  thermalStatics,
+  type StaticsMemo,
+  type ThermalPlanning,
   type ThermalResult,
   type ThermalStep,
 } from '../thermal.ts'
+import { sameThermalPlan, type PeakTemperatureModel, type ThermalPlan } from '../../contract/index.ts'
 import { GlContextLostError, Program, deleteTexture, framebuffer, target, texture, type Target } from './gl-util.ts'
 import { FULLSCREEN_VS } from './shaders.ts'
 import {
@@ -57,7 +62,54 @@ export interface GlThermalResult extends ThermalResult {
   /** Wall time of the whole step (ms), and its parts: CPU statics, GPU bin loop and bulk map (synced), bulk-map readback. */
   gpuMs: number
   timing: { staticsMs: number; loopMs: number; readbackMs: number }
+  /** Active bins stepped by this call (only the new ones when extended). */
   activeBins: number
+  /** True when this result continued the previous one over new samples (BURN-35). */
+  extended: boolean
+}
+
+type Rect = [x0: number, y0: number, x1: number, y1: number]
+
+/** Spare capacity for per-sample buffers of a live run (BURN-35): regrowing them re-uploads everything. */
+const LIVE_HEADROOM = 1.25
+
+/**
+ * The GPU step's state between calls (BURN-35): the textures of the last run
+ * and what it needs to continue over appended samples — bin starts, statics,
+ * and the grid as it was at the start of the last bin (snapshot targets plus
+ * the loop's scalars).
+ */
+interface GlResume {
+  plan: ThermalPlan
+  material: MaterialProfile
+  thermal: PeakTemperatureModel
+  count: number
+  storeVersion: number
+  lastT: number
+  binStart: Uint32Array
+  memo: StaticsMemo
+  flash: Float32Array
+  bulkGain: Float32Array
+  /** CPU copy of the static attribute buffer (flash, bulk gain, bin fraction per sample) and its GPU capacity (samples). */
+  statics: Float32Array
+  staticsCap: number
+  s0: Target
+  s1: Target
+  fresh: Target
+  freshTmp: Target
+  freshSpread: Target
+  dose: Target
+  injectFbo: WebGLFramebuffer
+  perSample: Target
+  perSampleRows: number
+  pre: Target
+  preRows: number
+  bulk: Target
+  /** Loop state now, and at the start of the last bin (with the snapshot textures). */
+  pending: number
+  live: boolean
+  freshRect: Rect | null
+  snap: { s0: Target; dose: Target; freshSpread: Target; pending: number; live: boolean; freshRect: Rect | null }
 }
 
 /** Read an R32F attachment (RGBA readback is the format every implementation must support). */
@@ -113,6 +165,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
     this.owned = []
     this.ownedFbos = []
     this.current = null
+    this.resume = null
   }
 
   private taps(alpha: number, dt: number, pitch: number): { tex: WebGLTexture; radius: number } {
@@ -135,24 +188,177 @@ export class GlPeakTemperatureStep implements ThermalStep {
     return { tex, radius: (w.length - 1) / 2 }
   }
 
-  run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma): GlThermalResult {
+  /** Continue-from state of `current` (BURN-35); dropped with its textures. */
+  private resume: GlResume | null = null
+
+  run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, planning: ThermalPlanning = 'job'): GlThermalResult {
     const thermal = peakTemperatureModel(material)
     if (!thermal) throw new Error('GlPeakTemperatureStep: material has no peakTemperature thermal model')
     const gl = this.gl
     const t0 = performance.now()
     this.release()
-    const plan = thermalPlanFor(store, thermal)
-    const table = cachedFlashTable(machine, kernel, thermal, plan.nearS)
-    const st = thermalStatics(store, plan, table, material, thermal)
+    const plan = thermalPlanFor(store, thermal, {}, planning)
+    const n = store.count
+    const { width: W, height: H } = plan.grid
+    const s0 = this.ownTarget(gl.RGBA32F, W, H)
+    const s1 = this.ownTarget(gl.RGBA32F, W, H)
+    const fresh = this.ownTarget(gl.RGBA32F, W, H)
+    const freshTmp = this.ownTarget(gl.RGBA32F, W, H)
+    const freshSpread = this.ownTarget(gl.RGBA32F, W, H)
+    const dose = this.ownTarget(gl.R32F, W, H)
+    const injectFbo = framebuffer(gl, fresh.tex, dose.tex)
+    this.ownedFbos.push(injectFbo)
+    for (const fbo of [s0.fbo, s1.fbo, injectFbo]) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+      gl.clearColor(0, 0, 0, 0)
+      gl.clear(gl.COLOR_BUFFER_BIT)
+    }
+    // A live job keeps growing: leave room so the next extends append in place instead of re-uploading.
+    const cap = planning === 'live' ? Math.ceil(n * LIVE_HEADROOM) : n
+    const perSampleRows = Math.max(1, Math.ceil(cap / PER_SAMPLE_WIDTH))
+    const bulk = this.ownTarget(gl.R32F, W, H)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bulk.fbo)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    const r: GlResume = {
+      plan,
+      material,
+      thermal,
+      count: 0,
+      storeVersion: -1,
+      lastT: -Infinity,
+      binStart: new Uint32Array(plan.binCount + 1),
+      memo: freshStaticsMemo(),
+      flash: new Float32Array(cap),
+      bulkGain: new Float32Array(cap),
+      statics: new Float32Array(cap * 3),
+      staticsCap: 0,
+      s0,
+      s1,
+      fresh,
+      freshTmp,
+      freshSpread,
+      dose,
+      injectFbo,
+      perSample: this.ownTarget(gl.RG32F, PER_SAMPLE_WIDTH, perSampleRows),
+      perSampleRows,
+      pre: this.ownTarget(gl.RG32F, PER_SAMPLE_WIDTH, 1),
+      preRows: 1,
+      bulk,
+      pending: 0,
+      live: false,
+      freshRect: null,
+      snap: {
+        s0: this.ownTarget(gl.RGBA32F, W, H),
+        dose: this.ownTarget(gl.R32F, W, H),
+        freshSpread: this.ownTarget(gl.RGBA32F, W, H),
+        pending: 0,
+        live: false,
+        freshRect: null,
+      },
+    }
+    return this.advance(r, store, machine, kernel, 0, t0, false)
+  }
+
+  extend(prev: ThermalResult, store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, planning: ThermalPlanning = 'job'): GlThermalResult | null {
+    const r = this.resume
+    const gl = this.gl
+    if (!r || prev !== this.current || prev.lost || gl.isContextLost()) return null
+    if (r.material !== material || store.count <= r.count || r.count === 0 || store.tS[r.count - 1] !== r.lastT) return null
+    const t0 = performance.now()
+    const plan = thermalPlanFor(store, r.thermal, {}, planning)
+    if (!sameThermalPlan(plan, r.plan)) return null
+    const from = r.plan.binCount - 1
+    r.plan = plan
+    // Back to the start of the last bin: the first one new samples can land in.
+    this.copy(r.snap.s0, r.s0)
+    this.copy(r.snap.dose, r.dose)
+    this.copy(r.snap.freshSpread, r.freshSpread)
+    r.pending = r.snap.pending
+    r.live = r.snap.live
+    r.freshRect = r.snap.freshRect
+    const n = store.count
+    const grow = (a: Float32Array, k: number) => {
+      if (a.length >= k) return a
+      const b = new Float32Array(Math.max(k, Math.ceil(a.length * LIVE_HEADROOM)))
+      b.set(a)
+      return b
+    }
+    r.flash = grow(r.flash, n)
+    r.bulkGain = grow(r.bulkGain, n)
+    r.statics = grow(r.statics, n * 3)
+    if (r.binStart.length < plan.binCount + 1) {
+      const b = new Uint32Array(Math.max(plan.binCount + 1, Math.ceil(r.binStart.length * 1.5)))
+      b.set(r.binStart)
+      r.binStart = b
+    }
+    if (n > r.perSampleRows * PER_SAMPLE_WIDTH) {
+      // Grow the per-sample texture with headroom, keeping what it holds.
+      const rows = Math.max(Math.ceil(n / PER_SAMPLE_WIDTH), Math.ceil(r.perSampleRows * LIVE_HEADROOM))
+      const next = this.ownTarget(gl.RG32F, PER_SAMPLE_WIDTH, rows)
+      this.copy(r.perSample, next, PER_SAMPLE_WIDTH, r.perSampleRows)
+      this.disown(r.perSample)
+      r.perSample = next
+      r.perSampleRows = rows
+    }
+    // The previous result's per-sample data may be gone (grown) and is superseded either way.
+    this.materialize = null
+    return this.advance(r, store, machine, kernel, from, t0, true)
+  }
+
+  private ownTarget(internal: number, w: number, h: number): Target {
+    const t = target(this.gl, internal, w, h)
+    this.owned.push(t.tex)
+    this.ownedFbos.push(t.fbo)
+    return t
+  }
+
+  private disown(t: Target): void {
+    deleteTexture(this.gl, t.tex)
+    this.gl.deleteFramebuffer(t.fbo)
+    this.owned = this.owned.filter((x) => x !== t.tex)
+    this.ownedFbos = this.ownedFbos.filter((x) => x !== t.fbo)
+  }
+
+  /** Copy src's first w × h texels into dst (same format). */
+  private copy(src: Target, dst: Target, w?: number, h?: number): void {
+    const gl = this.gl
+    const r = this.resume
+    const W = w ?? r!.plan.grid.width
+    const H = h ?? r!.plan.grid.height
+    gl.disable(gl.SCISSOR_TEST)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, src.fbo)
+    gl.readBuffer(gl.COLOR_ATTACHMENT0)
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst.fbo)
+    gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null)
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null)
+  }
+
+  /**
+   * Step bins [fromBin, binCount + lagBins) of r.plan on the GPU, with every
+   * earlier sample's result in r.perSample and the grid at fromBin's start,
+   * then add the new samples to the bulk map and build the result.
+   */
+  private advance(r: GlResume, store: SampleStore, machine: MachineProfile, kernel: KernelSigma, fromBin: number, t0: number, extended: boolean): GlThermalResult {
+    const gl = this.gl
+    this.resume = r
+    const { plan, material, thermal, binStart } = r
     const n = store.count
     const { width: W, height: H, pitchMm } = plan.grid
-
-    // Static per-sample attributes: flash factor, bulk gain, bin fraction.
-    const statics = new Float32Array(n * 3)
-    for (let k = 0; k < plan.binCount; k++)
-      for (let i = st.binStart[k]!; i < st.binStart[k + 1]!; i++) {
-        statics[i * 3] = st.flash[i]!
-        statics[i * 3 + 1] = st.bulkGain[i]!
+    const last = plan.binCount - 1
+    const table = cachedFlashTable(machine, kernel, thermal, plan.nearS)
+    fillBinStarts(store, plan, binStart, fromBin, fromBin === 0 ? 0 : binStart[fromBin]!)
+    const first = binStart[fromBin]!
+    staticsRange(store, first, binStart[last]!, table, material, thermal, r.memo, r.flash, r.bulkGain)
+    const memoAtLast = { ...r.memo }
+    staticsRange(store, binStart[last]!, n, table, material, thermal, r.memo, r.flash, r.bulkGain)
+    r.memo = memoAtLast
+    // Static per-sample attributes from `first` on: flash factor, bulk gain, bin fraction.
+    const statics = r.statics
+    for (let k = fromBin; k < plan.binCount; k++)
+      for (let i = binStart[k]!; i < binStart[k + 1]!; i++) {
+        statics[i * 3] = r.flash[i]!
+        statics[i * 3 + 1] = r.bulkGain[i]!
         statics[i * 3 + 2] = binFraction(store.tS[i]!, k, plan.binS)
       }
     const t1 = performance.now()
@@ -162,39 +368,26 @@ export class GlPeakTemperatureStep implements ThermalStep {
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0)
     gl.vertexAttribDivisor(0, 0)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.staticBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, statics, gl.STATIC_DRAW)
+    if (n > r.staticsCap) {
+      // (Re)allocate with the CPU copy's headroom and upload all of it.
+      r.staticsCap = statics.length / 3
+      gl.bufferData(gl.ARRAY_BUFFER, statics, gl.DYNAMIC_DRAW)
+    } else gl.bufferSubData(gl.ARRAY_BUFFER, first * 12, statics, first * 3, (n - first) * 3)
     gl.enableVertexAttribArray(1)
     gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 12, 0)
     gl.vertexAttribDivisor(1, 0)
     gl.bindVertexArray(null)
 
-    // Thermal grid state (ping-pong), accumulated dose, per-sample outputs.
-    const own = <T extends WebGLTexture>(t: T) => (this.owned.push(t), t)
-    const ownTarget = (internal: number, w: number, h: number): Target => {
-      const t = target(gl, internal, w, h)
-      this.owned.push(t.tex)
-      this.ownedFbos.push(t.fbo)
-      return t
-    }
-    const s0 = ownTarget(gl.RGBA32F, W, H)
-    const s1 = ownTarget(gl.RGBA32F, W, H)
-    const fresh = ownTarget(gl.RGBA32F, W, H)
-    const freshTmp = ownTarget(gl.RGBA32F, W, H)
-    const freshSpread = ownTarget(gl.RGBA32F, W, H)
-    const dose = own(texture(gl, gl.R32F, W, H))
-    const injectFbo = framebuffer(gl, fresh.tex, dose)
-    this.ownedFbos.push(injectFbo)
-    for (const fbo of [s0.fbo, s1.fbo, injectFbo]) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
-      gl.clearColor(0, 0, 0, 0)
-      gl.clear(gl.COLOR_BUFFER_BIT)
-    }
-    const rows = Math.max(1, Math.ceil(n / PER_SAMPLE_WIDTH))
-    const perSample = ownTarget(gl.RG32F, PER_SAMPLE_WIDTH, rows)
     let widest = 1
-    for (let k = 0; k < plan.binCount; k++) widest = Math.max(widest, st.binStart[k + 1]! - st.binStart[k]!)
+    for (let k = fromBin; k < plan.binCount; k++) widest = Math.max(widest, binStart[k + 1]! - binStart[k]!)
     const preRows = Math.ceil(widest / PER_SAMPLE_WIDTH)
-    const pre = ownTarget(gl.RG32F, PER_SAMPLE_WIDTH, preRows)
+    if (preRows > r.preRows) {
+      this.disown(r.pre)
+      r.pre = this.ownTarget(gl.RG32F, PER_SAMPLE_WIDTH, preRows)
+      r.preRows = preRows
+    }
+    const { s0, s1, fresh, freshTmp, freshSpread, dose, injectFbo, perSample, pre } = r
+    const rows = r.perSampleRows
 
     const area = pitchMm * pitchMm
     const cv = thermal.volumetricHeatCapacityJPerMm3K
@@ -207,9 +400,6 @@ export class GlPeakTemperatureStep implements ThermalStep {
         .f('u_origin', plan.grid.originXMm, plan.grid.originYMm)
         .f('u_invPitch', 1 / pitchMm)
         .i('u_gridSize', W, H)
-    type Rect = [x0: number, y0: number, x1: number, y1: number]
-    /** Where the last injection's spread heat lives, until the next diffusion lands it in the state. */
-    let freshRect: Rect | null = null
 
     /** One lateral pass of the diffuse program; see THERMAL_DIFFUSE_FS for the mask and add rects. */
     const lateral = (
@@ -244,53 +434,51 @@ export class GlPeakTemperatureStep implements ThermalStep {
       gl.drawArrays(gl.TRIANGLES, 0, 3)
     }
 
-    let pending = 0
-    let live = false
     let activeBins = 0
     /** Diffuse the pending time; the H pass also lands the last spread fresh heat. */
     const flush = () => {
-      const dt = pending
-      pending = 0
+      const dt = r.pending
+      r.pending = 0
       if (dt <= 0) return
       gl.disable(gl.BLEND)
       gl.bindVertexArray(this.emptyVao)
       gl.viewport(0, 0, W, H)
       const taps = this.taps(plan.alphaMm2PerS, dt, pitchMm)
-      lateral(s0.tex, s1, taps, [1, 0], freshRect ? { add: { tex: freshSpread.tex, rect: freshRect } } : {})
+      lateral(s0.tex, s1, taps, [1, 0], r.freshRect ? { add: { tex: freshSpread.tex, rect: r.freshRect } } : {})
       lateral(s1.tex, s0, taps, [0, 1], { depth: depthSolver(plan.layerMm, plan.alphaMm2PerS, dt) })
-      freshRect = null
+      r.freshRect = null
     }
 
     const runGather = (first: number, count: number, final: boolean) => {
       gl.disable(gl.BLEND)
       const out = final ? perSample : pre
       gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo)
-      gl.viewport(0, 0, PER_SAMPLE_WIDTH, final ? rows : preRows)
+      gl.viewport(0, 0, PER_SAMPLE_WIDTH, final ? rows : r.preRows)
       gl.bindVertexArray(this.vao)
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, s0.tex)
       gl.activeTexture(gl.TEXTURE1)
-      gl.bindTexture(gl.TEXTURE_2D, dose)
+      gl.bindTexture(gl.TEXTURE_2D, dose.tex)
       gl.activeTexture(gl.TEXTURE2)
       gl.bindTexture(gl.TEXTURE_2D, final ? pre.tex : null)
       gl.activeTexture(gl.TEXTURE3)
-      gl.bindTexture(gl.TEXTURE_2D, freshRect ? freshSpread.tex : null)
+      gl.bindTexture(gl.TEXTURE_2D, r.freshRect ? freshSpread.tex : null)
       const p = gridUniforms(this.gather.use())
         .i('u_state', 0)
         .i('u_doseAcc', 1)
         .i('u_pre', 2)
         .i('u_fresh', 3)
-        .i('u_hasFresh', freshRect ? 1 : 0)
+        .i('u_hasFresh', r.freshRect ? 1 : 0)
         .i('u_binFirst', first)
         .i('u_final', final ? 1 : 0)
-        .i('u_outSize', PER_SAMPLE_WIDTH, final ? rows : preRows)
+        .i('u_outSize', PER_SAMPLE_WIDTH, final ? rows : r.preRows)
         .f('u_absorption', material.absorption)
         .f('u_absorptionFull', thermal.absorptionAtFullChar ?? material.absorption)
         .i('u_feedback', feedback ? 1 : 0)
         .f('u_rampStart', ramp.rampStart)
         .f('u_rampEnd', ramp.rampEnd)
         .f('u_gamma', ramp.gamma)
-      if (freshRect) p.i4('u_freshRect', ...freshRect)
+      if (r.freshRect) p.i4('u_freshRect', ...r.freshRect)
       gl.drawArrays(gl.POINTS, first, count)
     }
 
@@ -343,16 +531,25 @@ export class GlPeakTemperatureStep implements ThermalStep {
       lateral(fresh.tex, freshTmp, spreadTaps, [1, 0], { mask: rect })
       lateral(freshTmp.tex, freshSpread, spreadTaps, [0, 1], { mask: rect })
       gl.disable(gl.SCISSOR_TEST)
-      freshRect = rect
-      live = true
+      r.freshRect = rect
+      r.live = true
     }
 
-    for (let k = 0; k < plan.binCount + plan.lagBins; k++) {
+    for (let k = fromBin; k < plan.binCount + plan.lagBins; k++) {
+      if (k === last) {
+        // Where the next call resumes: the grid at the start of the last bin.
+        this.copy(s0, r.snap.s0)
+        this.copy(dose, r.snap.dose)
+        if (r.freshRect) this.copy(freshSpread, r.snap.freshSpread)
+        r.snap.pending = r.pending
+        r.snap.live = r.live
+        r.snap.freshRect = r.freshRect
+      }
       const j = k - plan.lagBins
-      const injFrom = j >= 0 && j < plan.binCount ? st.binStart[j]! : 0
-      const injTo = j >= 0 && j < plan.binCount ? st.binStart[j + 1]! : 0
-      const gatFrom = k < plan.binCount ? st.binStart[k]! : 0
-      const gatTo = k < plan.binCount ? st.binStart[k + 1]! : 0
+      const injFrom = j >= 0 && j < plan.binCount ? binStart[j]! : 0
+      const injTo = j >= 0 && j < plan.binCount ? binStart[j + 1]! : 0
+      const gatFrom = k < plan.binCount ? binStart[k]! : 0
+      const gatTo = k < plan.binCount ? binStart[k + 1]! : 0
       if (injTo > injFrom || gatTo > gatFrom) {
         activeBins++
         flush()
@@ -360,23 +557,21 @@ export class GlPeakTemperatureStep implements ThermalStep {
         if (injTo > injFrom) runInject(injFrom, injTo - injFrom)
         if (gatTo > gatFrom) runGather(gatFrom, gatTo - gatFrom, true)
       }
-      if (live) pending += plan.binS
+      if (r.live) r.pending += plan.binS
     }
     gl.bindVertexArray(null)
 
-    // Bulk map on the GPU (MAX blend), then read back: it is small.
-    const bulk = ownTarget(gl.R32F, W, H)
+    // Bulk map on the GPU (MAX blend) over the samples gathered here, then read back: it is small.
+    const bulk = r.bulk
     gl.bindFramebuffer(gl.FRAMEBUFFER, bulk.fbo)
     gl.viewport(0, 0, W, H)
-    gl.clearColor(0, 0, 0, 0)
-    gl.clear(gl.COLOR_BUFFER_BIT)
     gl.enable(gl.BLEND)
     gl.blendEquation(gl.MAX)
     gl.bindVertexArray(this.vao)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, perSample.tex)
     gridUniforms(this.bulkProgram.use()).i('u_perSample', 0)
-    gl.drawArrays(gl.POINTS, 0, n)
+    gl.drawArrays(gl.POINTS, first, n - first)
     gl.blendEquation(gl.FUNC_ADD)
     gl.disable(gl.BLEND)
     gl.bindVertexArray(null)
@@ -385,22 +580,27 @@ export class GlPeakTemperatureStep implements ThermalStep {
     const t2 = performance.now()
     const bulkK = readR32F(gl, bulk.fbo, W, H)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    r.count = n
+    r.storeVersion = store.version
+    r.lastT = n ? store.tS[n - 1]! : -Infinity
 
     // (eAbs, eDose) stay on the GPU until the CPU asks (hover readout, energy checks).
     let arrays: { eAbs: Float32Array; eDose: Float32Array } | null = null
-    // Not read back yet and the texture died with a lost context (BURN-39): reading now gives zeros.
-    const lost = () => !arrays && (gl.isContextLost() || !gl.isTexture(perSample.tex))
+    const tex = perSample.tex
+    // Not read back yet and the texture died with a lost context (BURN-39) or was grown by a later extend: reading now gives zeros.
+    const lost = () => !arrays && (gl.isContextLost() || !gl.isTexture(tex))
     const readBack = () => {
       if (arrays) return arrays
       if (lost()) throw new GlContextLostError('WebGL context lost before the thermal result was read back')
+      const readRows = Math.max(1, Math.ceil(n / PER_SAMPLE_WIDTH))
       const rgRead = (() => {
         gl.bindFramebuffer(gl.FRAMEBUFFER, perSample.fbo)
         gl.readBuffer(gl.COLOR_ATTACHMENT0)
         return gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RG && gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.FLOAT
       })()
       const channels = rgRead ? 2 : 4
-      const raw = new Float32Array(PER_SAMPLE_WIDTH * rows * channels)
-      gl.readPixels(0, 0, PER_SAMPLE_WIDTH, rows, rgRead ? gl.RG : gl.RGBA, gl.FLOAT, raw)
+      const raw = new Float32Array(PER_SAMPLE_WIDTH * readRows * channels)
+      gl.readPixels(0, 0, PER_SAMPLE_WIDTH, readRows, rgRead ? gl.RG : gl.RGBA, gl.FLOAT, raw)
       gl.bindFramebuffer(gl.FRAMEBUFFER, null)
       const eAbs = new Float32Array(n)
       const eDose = new Float32Array(n)
@@ -432,6 +632,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
       gpuMs: performance.now() - t0,
       timing: { staticsMs: t1 - t0, loopMs: t2 - t1, readbackMs: performance.now() - t2 },
       activeBins,
+      extended,
     }
     return this.current
   }

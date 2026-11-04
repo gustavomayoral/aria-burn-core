@@ -71,6 +71,16 @@
 //     in it gathered; fireRisk.kind = temperature compares ambient + that.
 //   - Peak temperature output: ambient + flashKPerJPerMm2 · dose, the
 //     single-pass peak surface temperature equivalent to the cell's dose.
+//   - Live jobs (BURN-35): while a job streams (live tiling, contract live.ts)
+//     the thermal plan is planLiveThermal, so it holds across refreshes and a
+//     refresh only steps the new bins. The grid is planned as above over the
+//     burn bounds + margin rounded out to blocks of B mm on the absolute
+//     lattice, B = the power of two ≥ max(1, span ÷ THERMAL_LIVE_BLOCKS) for
+//     the larger span; binS is THERMAL_BIN_S · 2^j, the smallest such that the
+//     bins so far fit maxBins. Both change only when the bounds cross a block
+//     edge or the duration doubles; the step then reruns in full. Results
+//     equal a full run with the same plan. Once job.loaded arrives the job
+//     plan above applies again.
 
 import type { BoundsMm } from './common.ts'
 import type { GridSpec, KernelSigma } from './deposit.ts'
@@ -161,6 +171,55 @@ export function planThermal(
     injectFraction,
     injectSpreadCells2: gather2,
   }
+}
+
+/** Live grid extents are rounded out to blocks of about span ÷ this (BURN-35). */
+export const THERMAL_LIVE_BLOCKS = 8
+
+/**
+ * The thermal plan while a job streams (BURN-35, rules above): planThermal
+ * over block-rounded bounds, with binS quantized to powers of two, so the plan
+ * stays the same over many refreshes. `options` overrides as for planThermal.
+ */
+export function planLiveThermal(
+  burnBounds: BoundsMm,
+  lastSampleS: number,
+  durationS: number,
+  thermal: PeakTemperatureModel,
+  options: ThermalPlanOptions = {},
+): ThermalPlan {
+  const m = THERMAL_MARGIN_MM
+  const span = Math.max(burnBounds.maxXMm - burnBounds.minXMm, burnBounds.maxYMm - burnBounds.minYMm) + 2 * m
+  const block = 2 ** Math.ceil(Math.log2(Math.max(1, span / THERMAL_LIVE_BLOCKS)))
+  // planThermal adds the margin back, so the grid spans exactly the rounded extents.
+  const rounded: BoundsMm = {
+    minXMm: Math.floor((burnBounds.minXMm - m) / block) * block + m,
+    minYMm: Math.floor((burnBounds.minYMm - m) / block) * block + m,
+    maxXMm: Math.ceil((burnBounds.maxXMm + m) / block) * block - m,
+    maxYMm: Math.ceil((burnBounds.maxYMm + m) / block) * block - m,
+  }
+  if (options.binS !== undefined) return planThermal(rounded, lastSampleS, durationS, thermal, options)
+  const { grid } = planThermal(rounded, lastSampleS, durationS, thermal, { ...options, binS: THERMAL_BIN_S })
+  const maxBins = Math.max(1, Math.min(THERMAL_MAX_BINS, Math.floor(THERMAL_MAX_CELL_BINS / (grid.width * grid.height))))
+  const binS = THERMAL_BIN_S * 2 ** Math.max(0, Math.ceil(Math.log2(durationS / (maxBins * THERMAL_BIN_S))))
+  return planThermal(rounded, lastSampleS, durationS, thermal, { ...options, binS })
+}
+
+/** True when two plans step the same grid and bins (binCount aside): a run under one can be continued under the other. */
+export function sameThermalPlan(a: ThermalPlan, b: ThermalPlan): boolean {
+  const ga = a.grid
+  const gb = b.grid
+  return (
+    ga.originXMm === gb.originXMm &&
+    ga.originYMm === gb.originYMm &&
+    ga.pitchMm === gb.pitchMm &&
+    ga.width === gb.width &&
+    ga.height === gb.height &&
+    a.binS === b.binS &&
+    a.lagBins === b.lagBins &&
+    a.alphaMm2PerS === b.alphaMm2PerS &&
+    a.injectSpreadCells2 === b.injectSpreadCells2
+  )
 }
 
 /** Abramowitz & Stegun 7.1.26 (|error| < 1.5e-7). */

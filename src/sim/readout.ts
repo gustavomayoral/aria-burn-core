@@ -98,8 +98,8 @@ export class CellReader {
   }
 
   private thermal(): ThermalResult | null {
-    const { machine, material, thermalKernel, thermalStep } = this.setup
-    return thermalFor(this.store, machine, material, thermalKernel, thermalStep)
+    const { machine, material, thermalKernel, thermalStep, thermalPlanning } = this.setup
+    return thermalFor(this.store, machine, material, thermalKernel, thermalStep, thermalPlanning)
   }
 
   /**

@@ -437,7 +437,7 @@ export class GlSim {
     const gl = this.gl
     this.syncSamples(store)
     const step = setup.thermalStep ?? this.thermalStep ?? defaultThermalStep
-    const result = thermalFor(store, setup.machine, setup.material, setup.thermalKernel, step)!
+    const result = thermalFor(store, setup.machine, setup.material, setup.thermalKernel, step, setup.thermalPlanning)!
     const t = this.thermalState
     // Textures borrowed from the GPU step die with its next run.
     if (t?.result === result && (t.ownsPerSample || this.thermalStep?.current === result)) return t

@@ -19,7 +19,9 @@ import {
   LiveJob,
   SampleStore,
   interimSampler,
+  lastThermalPath,
   ledger,
+  peakTemperatureModel,
   planSide,
   watchContextLoss,
   loadMachineProfile,
@@ -32,6 +34,7 @@ import {
   type GlThermalResult,
   type SimSetup,
   type StageEnergy,
+  type ThermalStep,
 } from '../src/sim/index.ts'
 import type { MaterialProfile } from '../src/contract/index.ts'
 import { concatJobs, rasterJob, squareJob } from '../src/sim/test-jobs.ts'
@@ -428,51 +431,102 @@ async function runThermal(): Promise<void> {
 }
 
 /**
- * BURN-33: what one live (network) refresh costs as a streamed job grows.
- * Replays the app's refresh (aria-burn burn.svelte.ts scheduleLive → tick):
- * new batches arrive, the setup is rebuilt on live tiling, then a coarse run
- * at the live head, which reruns the thermal step because the store changed.
+ * BURN-33 / BURN-35: what one live (network) refresh costs as a streamed job
+ * grows. Replays the app's refresh (aria-burn burn.svelte.ts scheduleLive →
+ * tick): new batches arrive, the setup is rebuilt on live tiling, then a
+ * coarse run at the live head. The thermal step continues over the new bins
+ * (BURN-35, path "incr") unless the live thermal plan changed ("full"); the
+ * "before" replay forces a full rerun every refresh, as before BURN-35.
  * The app waits max(100 ms, 2 × last refresh) before the next one.
  */
-async function runLive(steps = 10, only?: number[]): Promise<void> {
+async function runLive(chunkCounts = [10, 40], only?: number[]): Promise<void> {
   lines.length = 0
-  log('== Live job (BURN-33): cost of one refresh as the stream grows ==')
+  log('== Live job (BURN-33 / BURN-35): cost of one refresh as the stream grows ==')
   log(`user agent: ${navigator.userAgent}`)
   log(`gl renderer: ${sim.caps.renderer}`)
+  log(`page visible: ${document.visibilityState}`)
   log(`gl error before: ${gl!.getError()}`)
-  const replay = async (label: string, m: MachineProfile, material: MaterialProfile) => {
+  const gpuStep = sim.thermalStep
+  /** The GPU step without extend: every refresh reruns in full (the pre-BURN-35 behaviour). */
+  const fullOnly: ThermalStep | undefined = gpuStep ? { id: gpuStep.id, run: (...a) => gpuStep.run(...a) } : undefined
+  const replay = async (label: string, m: MachineProfile, material: MaterialProfile, steps: number, mode: 'before' | 'after') => {
     log()
-    log(`== ${label} ==`)
+    log(`== ${label} · ${steps} chunks · ${mode === 'before' ? 'before: full thermal rerun every refresh' : 'after: incremental (BURN-35)'} ==`)
     const { plan } = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), m)
     const live = new LiveJob(1, 'bench', m, material)
     const n = plan.batches.length
+    const thermal = !!peakTemperatureModel(material)
     log(`batches ${n} · job ${plan.durationS.toFixed(0)} s · ${steps} refreshes`)
-    log('streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait')
+    log('streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait')
     let fed = 0
     let lastRefresh = 0
     const refreshes: number[] = []
+    const byPath: Record<string, { thermal: number[]; refresh: number[] }> = { incr: { thermal: [], refresh: [] }, full: { thermal: [], refresh: [] } }
     for (let i = 1; i <= steps; i++) {
+      const before = live.store.count
       const upTo = Math.round((n * i) / steps)
       for (; fed < upTo; fed++) live.onBatch(plan.batches[fed]!)
       const t0 = performance.now()
-      const setup = sim.fit(live.store, live.setup()!)
+      let setup = live.setup()!
+      if (mode === 'before' && fullOnly) setup = { ...setup, thermalStep: fullOnly }
       const t1 = performance.now()
+      // The thermal step first (it doesn't depend on the tile plan), so fit() below finds it cached.
       sim.syncSamples(live.store)
       sim.thermal(live.store, setup)
       sim.sync()
       const t2 = performance.now()
+      const path = !thermal ? '-' : lastThermalPath === 'extended' ? 'incr' : lastThermalPath === 'full' ? 'full' : lastThermalPath ?? '-'
+      const bins = thermal && gpuStep?.current ? String(gpuStep.current.activeBins) : '-'
+      const tf = performance.now()
+      setup = sim.fit(live.store, setup)
+      const fitMs = performance.now() - tf
+      const tc = performance.now()
       sim.runCoarse(live.store, setup, live.cutoffS(1, true))
       sim.sync()
       const t3 = performance.now()
       lastRefresh = t3 - t0
       refreshes.push(lastRefresh)
+      byPath[path]?.thermal.push(t2 - t1)
+      byPath[path]?.refresh.push(lastRefresh)
       const pct = `${Math.round((100 * i) / steps)} %`.padStart(8)
       const count = live.store.count.toLocaleString().padStart(10)
+      const added = (live.store.count - before).toLocaleString().padStart(9)
       const tiles = String(setup.plan.tiles.length).padStart(5)
-      log(`${pct} | ${count} | ${tiles} | ${ms(t1 - t0).padStart(8)} | ${ms(t2 - t1).padStart(9)} | ${ms(t3 - t2).padStart(8)} | ${ms(lastRefresh).padStart(8)} | ${ms(Math.max(100, 2 * lastRefresh)).padStart(8)}`)
+      log(
+        `${pct} | ${count} | ${added} | ${tiles} | ${ms(t1 - t0 + fitMs).padStart(8)} | ${ms(t2 - t1).padStart(9)} | ${path.padStart(4)} | ${bins.padStart(5)} | ${ms(t3 - tc).padStart(8)} | ${ms(lastRefresh).padStart(8)} | ${ms(Math.max(100, 2 * lastRefresh)).padStart(8)}`,
+      )
       await nextFrame()
     }
     log(`refresh: ${stats(refreshes)} · last ${ms(lastRefresh)} → the app's next refresh waits ${ms(Math.max(100, 2 * lastRefresh))}`)
+    for (const [k, v] of Object.entries(byPath))
+      if (v.refresh.length) log(`  ${k}: ${v.refresh.length} refreshes · thermal ${stats(v.thermal)} · refresh ${stats(v.refresh)}`)
+    if (thermal && mode === 'after' && gpuStep) {
+      // The incremental result against a full rerun of the same store under the same live plan.
+      const setup = sim.fit(live.store, live.setup()!)
+      const inc = sim.thermal(live.store, setup)!
+      const incAbs = inc.eAbs.slice()
+      const incDose = inc.eDose.slice()
+      const incBulk = inc.bulkK!.slice()
+      const full = gpuStep.run(live.store, m, material, setup.thermalKernel, 'live')
+      let maxA = 0
+      let maxW = 0
+      let maxB = 0
+      let peakB = 0
+      let badB = 0
+      for (let j = 0; j < full.count; j++) {
+        maxA = Math.max(maxA, Math.abs(incAbs[j]! - full.eAbs[j]!) / full.eAbs[j]!)
+        maxW = Math.max(maxW, Math.abs(incDose[j]! / incAbs[j]! - full.eDose[j]! / full.eAbs[j]!))
+      }
+      for (let c = 0; c < full.bulkK!.length; c++) {
+        const d = Math.abs(incBulk[c]! - full.bulkK![c]!)
+        maxB = Math.max(maxB, d)
+        if (d > 0.01 * Math.max(full.bulkK![c]!, 1)) badB++
+        peakB = Math.max(peakB, full.bulkK![c]!)
+      }
+      const p = full.plan!
+      log(`  live thermal plan at the end: grid ${p.grid.width} × ${p.grid.height} @ ${p.grid.pitchMm.toFixed(3)} mm · bins ${p.binCount} × ${(p.binS * 1000).toFixed(0)} ms (lag ${p.lagBins})`)
+      log(`  incremental vs full rerun (GPU, same store and plan): per-sample eAbs max rel Δ ${maxA.toExponential(2)} · dose weight max |Δ| ${maxW.toExponential(2)} · bulk map max |Δ| ${maxB.toFixed(3)} K of ${peakB.toFixed(0)} K, cells off by > 1 %: ${badB} / ${full.bulkK!.length}`)
+    }
     log(`gl error after replay: ${gl!.getError()}`)
     sim.releaseTargets()
     await nextFrame()
@@ -483,7 +537,11 @@ async function runLive(steps = 10, only?: number[]): Promise<void> {
     ['provisional diode, 5 µm pitch, 100 × 100 mm raster, birch (thermal)', machine, birch],
   ]
   try {
-    for (const i of only ?? cases.keys()) await replay(...cases[i]!)
+    for (const i of only ?? cases.keys()) {
+      const [label, m, material] = cases[i]!
+      if (peakTemperatureModel(material)) await replay(label, m, material, chunkCounts[0]!, 'before')
+      for (const steps of chunkCounts) await replay(label, m, material, steps, 'after')
+    }
   } catch (err) {
     log(`FAILED: ${String(err)}`)
   }

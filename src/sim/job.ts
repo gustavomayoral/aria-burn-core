@@ -23,7 +23,7 @@ import {
   type TilePlan,
 } from '../contract/index.ts'
 import { separableKernel, type SeparableKernel } from './kernel.ts'
-import type { ThermalStep } from './thermal.ts'
+import type { ThermalPlanning, ThermalStep } from './thermal.ts'
 
 export interface SimSetup {
   machine: MachineProfile
@@ -46,6 +46,12 @@ export interface SimSetup {
   detailPitchMm: number
   /** How `plan` was made, so a smaller tile budget can rebuild it the same way (BURN-36). */
   tiling: 'regular' | 'live'
+  /**
+   * Thermal plan (BURN-35): 'live' while the job streams (set with live
+   * tiling), so the thermal step continues over new samples instead of
+   * rerunning; absent means 'job'.
+   */
+  thermalPlanning?: ThermalPlanning
 }
 
 export interface SetupOptions {
@@ -98,6 +104,7 @@ export function setupJob(
     tiling,
   }
   if (options.thermalStep) setup.thermalStep = options.thermalStep
+  if (tiling === 'live') setup.thermalPlanning = 'live'
   return setup
 }
 

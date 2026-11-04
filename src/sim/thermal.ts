@@ -17,7 +17,9 @@ import {
   flashTable,
   gaussianTaps,
   mirrorIndex,
+  planLiveThermal,
   planThermal,
+  sameThermalPlan,
   sigmaAcross,
   THERMAL_MIN_SPEED_MM_PER_S,
   type FlashTable,
@@ -50,13 +52,27 @@ export interface ThermalResult {
   readonly lost?: boolean
 }
 
+/**
+ * Which thermal plan a step uses: the job plan (planThermal), or while a job
+ * streams the live plan (planLiveThermal, BURN-35) that holds across refreshes.
+ */
+export type ThermalPlanning = 'job' | 'live'
+
 export interface ThermalStep {
   /**
    * Steps with the same id compute the same model (the CPU reference and the
    * WebGL2 port of peakTemperature), so they share one cached result.
    */
   readonly id: string
-  run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma): ThermalResult
+  run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, planning?: ThermalPlanning): ThermalResult
+  /**
+   * Optional (BURN-35): continue `prev`, this step's latest result for the
+   * same store, machine, material, kernel and planning, over the samples
+   * appended to the store since. Returns null when it can't (another plan,
+   * state gone, store not a pure append); thermalFor then runs in full. The
+   * result equals run() on the current store; `prev` is superseded.
+   */
+  extend?(prev: ThermalResult, store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, planning?: ThermalPlanning): ThermalResult | null
 }
 
 export const peakTemperatureModel = (material: MaterialProfile): PeakTemperatureModel | null =>
@@ -84,33 +100,52 @@ export function cachedFlashTable(machine: MachineProfile, kernel: KernelSigma, t
   return t
 }
 
-export function thermalPlanFor(store: SampleStore, thermal: PeakTemperatureModel, options: ThermalPlanOptions = {}): ThermalPlan {
+export function thermalPlanFor(store: SampleStore, thermal: PeakTemperatureModel, options: ThermalPlanOptions = {}, planning: ThermalPlanning = 'job'): ThermalPlan {
   const b = store.burnBounds ?? { minXMm: 0, minYMm: 0, maxXMm: 0, maxYMm: 0 }
   const last = store.count ? store.tS[store.count - 1]! : 0
-  return planThermal(b, last, store.sampledUntilS, thermal, options)
+  return (planning === 'live' ? planLiveThermal : planThermal)(b, last, store.sampledUntilS, thermal, options)
 }
 
-export function thermalStatics(
+/** The statics loop's memo (last speed, direction, flash factor and σ⊥), carried across ranges so a resumed range matches a full one. */
+export interface StaticsMemo {
+  v: number
+  ux: number
+  uy: number
+  flash: number
+  sigma: number
+}
+
+export const freshStaticsMemo = (): StaticsMemo => ({ v: NaN, ux: NaN, uy: NaN, flash: 0, sigma: 0 })
+
+/**
+ * Flash factor and bulk gain of samples [from, to) into `flash` / `bulkGain`
+ * (indexed by sample), continuing `memo` (updated in place). Sample i's
+ * direction reads samples i ± 1, so a sample's value changes once a next
+ * sample arrives: resume at the last bin's first sample (BURN-35).
+ */
+export function staticsRange(
   store: SampleStore,
-  plan: ThermalPlan,
+  from: number,
+  to: number,
   table: FlashTable,
   material: MaterialProfile,
   thermal: PeakTemperatureModel,
-): ThermalStatics {
+  memo: StaticsMemo,
+  flash: Float32Array,
+  bulkGain: Float32Array,
+): void {
   const n = store.count
   const { xye, tS, dtS, speedMmPerS } = store
-  const flash = new Float32Array(n)
-  const bulkGain = new Float32Array(n)
   const flashK = flashKPerJPerMm2(material, thermal)
   const root2pi = Math.sqrt(2 * Math.PI)
   // Consecutive samples of a move share speed and direction, so the table
   // lookup and σ⊥ are memoised on (speed, unit direction).
-  let lastV = NaN
-  let lastUx = NaN
-  let lastUy = NaN
-  let lastFlash = 0
-  let lastSigma = 0
-  for (let i = 0; i < n; i++) {
+  let lastV = memo.v
+  let lastUx = memo.ux
+  let lastUy = memo.uy
+  let lastFlash = memo.flash
+  let lastSigma = memo.sigma
+  for (let i = from; i < to; i++) {
     const v = Math.max(speedMmPerS[i]!, THERMAL_MIN_SPEED_MM_PER_S)
     // Direction from the neighbours in the same continuous run (no beam-off gap between them).
     const lo = i > 0 && tS[i]! - tS[i - 1]! <= (dtS[i - 1]! + dtS[i]!) * 0.51 + 1e-9 ? i - 1 : i
@@ -139,14 +174,38 @@ export function thermalStatics(
     const p = xye[i * 3 + 2]! / Math.max(dtS[i]!, 1e-12)
     bulkGain[i] = p > 0 ? (v * root2pi * lastSigma) / (flashK * p) : 0
   }
-  const binStart = new Uint32Array(plan.binCount + 1)
-  let s = 0
-  for (let k = 0; k < plan.binCount; k++) {
+  memo.v = lastV
+  memo.ux = lastUx
+  memo.uy = lastUy
+  memo.flash = lastFlash
+  memo.sigma = lastSigma
+}
+
+/** binStart[k] for k ≥ fromBin (binStart[fromBin] = fromSample), plus the final count. */
+export function fillBinStarts(store: SampleStore, plan: ThermalPlan, binStart: Uint32Array, fromBin: number, fromSample: number): void {
+  const n = store.count
+  let s = fromSample
+  for (let k = fromBin; k < plan.binCount; k++) {
     binStart[k] = s
     const end = (k + 1) * plan.binS
     while (s < n && store.tS[s]! < end) s++
   }
   binStart[plan.binCount] = n
+}
+
+export function thermalStatics(
+  store: SampleStore,
+  plan: ThermalPlan,
+  table: FlashTable,
+  material: MaterialProfile,
+  thermal: PeakTemperatureModel,
+): ThermalStatics {
+  const n = store.count
+  const flash = new Float32Array(n)
+  const bulkGain = new Float32Array(n)
+  staticsRange(store, 0, n, table, material, thermal, freshStaticsMemo(), flash, bulkGain)
+  const binStart = new Uint32Array(plan.binCount + 1)
+  fillBinStarts(store, plan, binStart, 0, 0)
   return { flash, bulkGain, binStart }
 }
 
@@ -154,6 +213,14 @@ export function thermalStatics(
 export function absorptionAt(material: MaterialProfile, thermal: PeakTemperatureModel, charT: number): number {
   const full = thermal.absorptionAtFullChar
   return full === undefined ? material.absorption : material.absorption + (full - material.absorption) * charT
+}
+
+export interface CpuGridSnapshot {
+  state: Float32Array
+  doseAcc: Float32Array
+  injectedJ: number
+  pendingS: number
+  live: boolean
 }
 
 /** The peakTemperature thermal grid, stepped bin by bin on the CPU. */
@@ -183,6 +250,19 @@ export class CpuThermalGrid {
     this.bulkK = new Float32Array(this.cells)
     this.scratch = new Float32Array(this.cells)
     this.fresh = new Float32Array(plan.layerMm.length * this.cells)
+  }
+
+  /** The grid's time state, to resume a run from (BURN-35); fresh heat is always landed between bins. */
+  snapshot(): CpuGridSnapshot {
+    return { state: this.state.slice(), doseAcc: this.doseAcc.slice(), injectedJ: this.injectedJ, pendingS: this.pendingS, live: this.live }
+  }
+
+  restore(s: CpuGridSnapshot): void {
+    this.state.set(s.state)
+    this.doseAcc.set(s.doseAcc)
+    this.injectedJ = s.injectedJ
+    this.pendingS = s.pendingS
+    this.live = s.live
   }
 
   /** Σ ρc · ΔT · volume over every layer and cell (J). */
@@ -348,35 +428,123 @@ export interface CpuThermalRun extends ThermalResult {
   sampleBulkK: Float32Array
 }
 
+/** Grow a typed array to hold n, keeping its contents (1.5× headroom). */
+function grown<T extends Float32Array | Uint32Array>(a: T, n: number, make: (n: number) => T): T {
+  if (a.length >= n) return a
+  const b = make(Math.max(n, Math.ceil(a.length * 1.5), 1024))
+  b.set(a)
+  return b
+}
+
+/**
+ * What a run keeps to continue later (BURN-35): the plan, per-sample buffers
+ * with headroom, bin starts, and the grid and statics memo as they were at
+ * the start of the last bin, the first one new samples can land in.
+ */
+interface CpuResume {
+  plan: ThermalPlan
+  count: number
+  storeVersion: number
+  /** tS of the last sample covered, to check the store only grew. */
+  lastT: number
+  grid: CpuThermalGrid
+  eAbs: Float32Array
+  eDose: Float32Array
+  sampleBulkK: Float32Array
+  flash: Float32Array
+  bulkGain: Float32Array
+  binStart: Uint32Array
+  /** Grid state at the start of bin plan.binCount − 1, before its diffusion. */
+  lastBin: CpuGridSnapshot
+  /** Statics memo just before that bin's first sample. */
+  memo: StaticsMemo
+}
+
 /** The peakTemperature step on the CPU (Option B reference). */
 export class CpuPeakTemperatureStep implements ThermalStep {
   readonly id: string
+  private readonly resumes = new WeakMap<ThermalResult, CpuResume>()
   constructor(readonly options: ThermalPlanOptions = {}) {
     this.id = `peakTemperature/${options.pitchMm ?? ''}/${options.binS ?? ''}/${options.nearS ?? ''}`
   }
 
-  run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma): CpuThermalRun {
+  run(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, planning: ThermalPlanning = 'job'): CpuThermalRun {
     const thermal = peakTemperatureModel(material)
     if (!thermal) throw new Error('CpuPeakTemperatureStep: material has no peakTemperature thermal model')
-    const plan = thermalPlanFor(store, thermal, this.options)
-    const table = cachedFlashTable(machine, kernel, thermal, plan.nearS)
-    const st = thermalStatics(store, plan, table, material, thermal)
-    const ramp = responseParams(material)
-    const grid = new CpuThermalGrid(plan, thermal.volumetricHeatCapacityJPerMm3K)
+    const plan = thermalPlanFor(store, thermal, this.options, planning)
     const n = store.count
-    const eAbs = new Float32Array(n)
-    const eDose = new Float32Array(n)
-    const sampleBulkK = new Float32Array(n)
+    const r: CpuResume = {
+      plan,
+      count: 0,
+      storeVersion: -1,
+      lastT: -Infinity,
+      grid: new CpuThermalGrid(plan, thermal.volumetricHeatCapacityJPerMm3K),
+      eAbs: new Float32Array(n),
+      eDose: new Float32Array(n),
+      sampleBulkK: new Float32Array(n),
+      flash: new Float32Array(n),
+      bulkGain: new Float32Array(n),
+      binStart: new Uint32Array(plan.binCount + 1),
+      lastBin: null!,
+      memo: freshStaticsMemo(),
+    }
+    return this.advance(r, store, machine, material, kernel, thermal, 0)
+  }
+
+  extend(prev: ThermalResult, store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, planning: ThermalPlanning = 'job'): CpuThermalRun | null {
+    const r = this.resumes.get(prev)
+    const thermal = peakTemperatureModel(material)
+    if (!r || !thermal || store.count < r.count || r.count === 0) return null
+    if (store.tS[r.count - 1] !== r.lastT || store.version === r.storeVersion) return null
+    const plan = thermalPlanFor(store, thermal, this.options, planning)
+    if (!sameThermalPlan(plan, r.plan)) return null
+    // Superseded: prev's buffers are shared prefixes, its grid is stepped on.
+    this.resumes.delete(prev)
+    const from = r.plan.binCount - 1
+    r.plan = plan
+    r.grid.restore(r.lastBin)
+    const n = store.count
+    r.eAbs = grown(r.eAbs, n, (k) => new Float32Array(k))
+    r.eDose = grown(r.eDose, n, (k) => new Float32Array(k))
+    r.sampleBulkK = grown(r.sampleBulkK, n, (k) => new Float32Array(k))
+    r.flash = grown(r.flash, n, (k) => new Float32Array(k))
+    r.bulkGain = grown(r.bulkGain, n, (k) => new Float32Array(k))
+    r.binStart = grown(r.binStart, plan.binCount + 1, (k) => new Uint32Array(k))
+    return this.advance(r, store, machine, material, kernel, thermal, from)
+  }
+
+  /** Step bins [fromBin, binCount + lagBins) of r.plan; r holds every earlier sample's result and the grid at fromBin's start. */
+  private advance(
+    r: CpuResume,
+    store: SampleStore,
+    machine: MachineProfile,
+    material: MaterialProfile,
+    kernel: KernelSigma,
+    thermal: PeakTemperatureModel,
+    fromBin: number,
+  ): CpuThermalRun {
+    const { plan, grid, eAbs, eDose, sampleBulkK, flash, bulkGain, binStart } = r
+    const n = store.count
+    const table = cachedFlashTable(machine, kernel, thermal, plan.nearS)
+    const ramp = responseParams(material)
+    const last = plan.binCount - 1
+    fillBinStarts(store, plan, binStart, fromBin, fromBin === 0 ? 0 : binStart[fromBin]!)
+    // Statics from fromBin's first sample, with the memo kept at the last bin's start for the next resume.
+    staticsRange(store, binStart[fromBin]!, binStart[last]!, table, material, thermal, r.memo, flash, bulkGain)
+    const memoAtLast = { ...r.memo }
+    staticsRange(store, binStart[last]!, n, table, material, thermal, r.memo, flash, bulkGain)
+    r.memo = memoAtLast
     const { xye } = store
     let widest = 0
-    for (let k = 0; k < plan.binCount; k++) widest = Math.max(widest, st.binStart[k + 1]! - st.binStart[k]!)
+    for (let k = fromBin; k < plan.binCount; k++) widest = Math.max(widest, binStart[k + 1]! - binStart[k]!)
     const preDose = new Float32Array(widest)
-    for (let k = 0; k < plan.binCount + plan.lagBins; k++) {
+    for (let k = fromBin; k < plan.binCount + plan.lagBins; k++) {
+      if (k === last) r.lastBin = grid.snapshot()
       const j = k - plan.lagBins
-      const injFrom = j >= 0 && j < plan.binCount ? st.binStart[j]! : 0
-      const injTo = j >= 0 && j < plan.binCount ? st.binStart[j + 1]! : 0
-      const gatFrom = k < plan.binCount ? st.binStart[k]! : 0
-      const gatTo = k < plan.binCount ? st.binStart[k + 1]! : 0
+      const injFrom = j >= 0 && j < plan.binCount ? binStart[j]! : 0
+      const injTo = j >= 0 && j < plan.binCount ? binStart[j + 1]! : 0
+      const gatFrom = k < plan.binCount ? binStart[k]! : 0
+      const gatTo = k < plan.binCount ? binStart[k + 1]! : 0
       if (injTo > injFrom || gatTo > gatFrom) grid.flush()
       // Before the lagged bin lands, for the time blend below.
       for (let i = gatFrom; i < gatTo; i++) {
@@ -393,27 +561,32 @@ export class CpuPeakTemperatureStep implements ThermalStep {
         const f = binFraction(store.tS[i]!, k, plan.binS)
         const bulk = sampleBulkK[i]! + (g.bulkK - sampleBulkK[i]!) * f
         const dose = preDose[i - gatFrom]! + (g.doseAcc - preDose[i - gatFrom]!) * f
-        const r = finishSample(material, thermal, ramp, xye[i * 3 + 2]!, st.flash[i]!, st.bulkGain[i]!, bulk, dose)
-        eAbs[i] = r.eAbs
-        eDose[i] = r.eDose
+        const out = finishSample(material, thermal, ramp, xye[i * 3 + 2]!, flash[i]!, bulkGain[i]!, bulk, dose)
+        eAbs[i] = out.eAbs
+        eDose[i] = out.eDose
         sampleBulkK[i] = bulk
         grid.recordBulk(x, y, bulk)
       }
       grid.advance(plan.binS)
     }
     grid.flush()
-    return {
+    r.count = n
+    r.storeVersion = store.version
+    r.lastT = n ? store.tS[n - 1]! : -Infinity
+    const result: CpuThermalRun = {
       count: n,
       storeVersion: store.version,
-      eAbs,
-      eDose,
+      eAbs: eAbs.subarray(0, n),
+      eDose: eDose.subarray(0, n),
       bulkK: grid.bulkK,
       plan,
       ambientK: thermal.ambientK,
       flashK: flashKPerJPerMm2(material, thermal),
       grid,
-      sampleBulkK,
+      sampleBulkK: sampleBulkK.subarray(0, n),
     }
+    if (n > 0) this.resumes.set(result, r)
+    return result
   }
 }
 
@@ -428,16 +601,49 @@ export function bulkAt(result: ThermalResult, xMm: number, yMm: number): number 
   return result.ambientK + bulkK[y * g.width + x]!
 }
 
-const resultCache = new WeakMap<SampleStore, { key: unknown[]; result: ThermalResult }>()
+interface CacheEntry {
+  key: unknown[]
+  result: ThermalResult
+  /** store.missingSequences.length when computed: a new gap means batches came out of order. */
+  missing: number
+}
+
+const resultCache = new WeakMap<SampleStore, CacheEntry>()
+
+const cacheKey = (store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, stepId: string, planning: ThermalPlanning): unknown[] => [
+  store.version,
+  machine,
+  material,
+  kernel.sigmaUMm,
+  kernel.sigmaVMm,
+  kernel.angleDeg,
+  stepId,
+  planning,
+]
 
 /** Seed the cache with a result computed elsewhere (the GPU step), so the readout reuses it. */
-export function cacheThermal(store: SampleStore, machine: MachineProfile, material: MaterialProfile, kernel: KernelSigma, stepId: string, result: ThermalResult): void {
-  resultCache.set(store, { key: [store.version, machine, material, kernel.sigmaUMm, kernel.sigmaVMm, kernel.angleDeg, stepId], result })
+export function cacheThermal(
+  store: SampleStore,
+  machine: MachineProfile,
+  material: MaterialProfile,
+  kernel: KernelSigma,
+  stepId: string,
+  result: ThermalResult,
+  planning: ThermalPlanning = 'job',
+): void {
+  resultCache.set(store, { key: cacheKey(store, machine, material, kernel, stepId, planning), result, missing: store.missingSequences.length })
 }
+
+/** How the last thermalFor call got its result (bench and tests): cached, continued (extend), or a full run. */
+export let lastThermalPath: 'cached' | 'extended' | 'full' | null = null
 
 /**
  * The thermal result for a store and material, cached per store version, so
- * every tile, the coarse scrub and the hover readout share one run.
+ * every tile, the coarse scrub and the hover readout share one run. When only
+ * the store changed (a live job streamed more samples) a step with `extend`
+ * continues the cached result over the new bins instead (BURN-35); it falls
+ * back to a full run whenever the plan, machine, material, kernel or planning
+ * changed or a batch went missing.
  */
 export function thermalFor(
   store: SampleStore,
@@ -445,14 +651,31 @@ export function thermalFor(
   material: MaterialProfile,
   kernel: KernelSigma,
   step: ThermalStep = defaultThermalStep,
+  planning: ThermalPlanning = 'job',
 ): ThermalResult | null {
   // A material without a thermal model drives the response from fluence, whatever the step.
   if (!peakTemperatureModel(material)) return null
-  const key = [store.version, machine, material, kernel.sigmaUMm, kernel.sigmaVMm, kernel.angleDeg, step.id]
+  const key = cacheKey(store, machine, material, kernel, step.id, planning)
   const hit = resultCache.get(store)
-  if (hit && !hit.result.lost && hit.key.length === key.length && hit.key.every((v, i) => v === key[i])) return hit.result
-  const result = step.run(store, machine, material, kernel)
-  resultCache.set(store, { key, result })
+  const missing = store.missingSequences.length
+  if (hit && !hit.result.lost && hit.key.length === key.length) {
+    if (hit.key.every((v, i) => v === key[i])) {
+      lastThermalPath = 'cached'
+      return hit.result
+    }
+    // Same everything but the store version, no new gaps: continue it.
+    if (step.extend && hit.missing === missing && hit.result.count < store.count && hit.key.every((v, i) => i === 0 || v === key[i])) {
+      const result = step.extend(hit.result, store, machine, material, kernel, planning)
+      if (result) {
+        resultCache.set(store, { key, result, missing })
+        lastThermalPath = 'extended'
+        return result
+      }
+    }
+  }
+  const result = step.run(store, machine, material, kernel, planning)
+  resultCache.set(store, { key, result, missing })
+  lastThermalPath = 'full'
   return result
 }
 

@@ -56,6 +56,13 @@ Normative rules: `src/contract/thermal.ts`. In short:
   (`thermal.test.ts` has a stand-in). Pass it as `setupJob(…, { thermalStep })`.
 - **Scrub.** Weights depend only on earlier samples, so one run serves every cutoff. The coarse scrub
   deposits the same dose energies, and the issue's scrub question goes away.
+- **Live jobs (BURN-35).** While a job streams, the setup's live tiling selects the live thermal plan
+  (`planLiveThermal`): the grid over the bounds rounded out to blocks of about span ÷ 8, and `binS` a
+  power-of-two multiple of 10 ms. It stays the same over many refreshes, so `thermalFor` continues the
+  cached result (`ThermalStep.extend`) from a snapshot taken at the start of the last bin, over the new
+  bins only. It reruns in full when that plan changes, the machine, material or kernel changes, a batch
+  goes missing, or `job.loaded` switches to the job plan. The continued result equals a full run under
+  the same plan (bit for bit on the CPU, `thermal-live.test.ts`).
 
 **Synthetic acceptance (`src/sim/thermal.test.ts`, CPU reference):**
 
@@ -70,7 +77,9 @@ Normative rules: `src/contract/thermal.ts`. In short:
 
 - A neighbouring line that passes within τ (20 ms) of a sample counts in neither term. Only very short,
   very fast lines are affected.
-- Live jobs rerun the whole thermal step whenever the store grows. An incremental run is a follow-up.
+- While streaming, the live plan's rounded extents can make its thermal pitch up to 1.5× the job plan's
+  (about 1.1× for the 100 mm bench raster once it is complete), and each plan change (up to about eight per
+  doubling of the job's extent, one per doubling of its duration) costs one full rerun.
 - Without `EXT_float_blend`, the CPU reference runs the thermal step. That is slow for big jobs.
 
 ## Tiling
