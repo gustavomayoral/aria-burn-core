@@ -30,7 +30,7 @@ The raw settings rows are also kept as data in `derivation.ts`. `src/profiles/pr
 | `accelMmPerS2` | 1000 | Middle of the 250–2500 range reported for GRBL diode machines ([GRBL tuning guides](https://docs.sainsmart.com/article/9m0rbnw6k1-introduction-to-cnc-for-a-total-novice-tuning-gbrl-settings), [LightBurn forum](https://forum.lightburnsoftware.com/t/acceleration-problem/22258)); no factory `$120` value was found | Low |
 | `travelMm` | 410 × 400 | Sculpfun S30 Pro work area (the same page also says 380 × 385 elsewhere) | Medium |
 
-**Grid pitch (COD-260 open point).** `gridPitchMm` = minor σ ÷ 3 = 0.005 mm. At `TILE_MAX_CELLS` = 9000 that gives **45 mm per tile**, which is smaller than the about 60 mm the COD-260 placeholder gave. The blur kernel adds heat spread in quadrature (wood: √(0.015² + 0.013²) ≈ 0.020 mm), but the pitch rule uses only the spot. See "Known uncertainty" item 1.
+**Grid pitch (COD-260 open point).** `gridPitchMm` = minor σ ÷ 3 = 0.005 mm. At the `TILE_MAX_CELLS` = 9000 hard cap that gives **45 mm per tile**, which is smaller than the about 60 mm the COD-260 placeholder gave. Since BURN-36 the actual tile side comes from the GPU byte budget and is often smaller (e.g. ~34 mm at 6720 cells on an M1 for a 100 mm job). The blur kernel adds heat spread in quadrature (wood: √(0.015² + 0.013²) ≈ 0.020 mm), but the pitch rule uses only the spot. See "Known uncertainty" item 1.
 
 ## 2. Fluence derivation
 

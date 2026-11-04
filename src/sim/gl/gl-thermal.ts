@@ -35,7 +35,7 @@ import {
   type ThermalResult,
   type ThermalStep,
 } from '../thermal.ts'
-import { Program, framebuffer, target, texture, type Target } from './gl-util.ts'
+import { Program, deleteTexture, framebuffer, target, texture, type Target } from './gl-util.ts'
 import { FULLSCREEN_VS } from './shaders.ts'
 import {
   PER_SAMPLE_WIDTH,
@@ -108,7 +108,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
     // The result may still be cached for the hover readout: keep its energies on the CPU.
     this.materialize?.()
     this.materialize = null
-    for (const t of this.owned) this.gl.deleteTexture(t)
+    for (const t of this.owned) deleteTexture(this.gl, t)
     for (const f of this.ownedFbos) this.gl.deleteFramebuffer(f)
     this.owned = []
     this.ownedFbos = []
@@ -127,7 +127,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
       tex = texture(gl, gl.R32F, w.length, 1)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w.length, 1, gl.RED, gl.FLOAT, w)
       if (this.tapTextures.size > 64) {
-        for (const t of this.tapTextures.values()) gl.deleteTexture(t)
+        for (const t of this.tapTextures.values()) deleteTexture(gl, t)
         this.tapTextures.clear()
       }
       this.tapTextures.set(key, tex)

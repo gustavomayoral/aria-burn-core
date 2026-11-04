@@ -34,10 +34,16 @@ export interface SimSetup {
   separable: SeparableKernel
   grid: GridSpec
   plan: TilePlan
+  /** How `plan` was made, so a smaller tile budget can rebuild it the same way (BURN-36). */
+  tiling: 'regular' | 'live'
 }
 
 export interface SetupOptions {
-  /** Tile budget override (tests use small tiles to exercise seams). */
+  /**
+   * Padded tile side. Default TILE_MAX_CELLS (the hard cap); on the GPU run
+   * the setup through GlSim.fit() so tiles fit the byte budget (BURN-36).
+   * Tests use small tiles to exercise seams.
+   */
   maxTileCells?: number
   /** Pitch override (mm). Default is the contract's gridPitchMm (minor spot sigma ÷ 3). */
   pitchMm?: number
@@ -57,8 +63,9 @@ export function setupJob(
   const kernel = kernelSigma(machine.spot, material.sigmaHeatMm)
   const grid = planJobGrid(burnBounds, pitchMm, kernel)
   const maxCells = options.maxTileCells ?? TILE_MAX_CELLS
-  const plan = options.tiling === 'live' ? planLiveTiles(grid, kernel, maxCells) : planTiles(grid, kernel, maxCells)
-  const setup: SimSetup = { machine, material, kernel, thermalKernel: kernel, separable: separableKernel(kernel, pitchMm), grid, plan }
+  const tiling = options.tiling ?? 'regular'
+  const plan = tiling === 'live' ? planLiveTiles(grid, kernel, maxCells) : planTiles(grid, kernel, maxCells)
+  const setup: SimSetup = { machine, material, kernel, thermalKernel: kernel, separable: separableKernel(kernel, pitchMm), grid, plan, tiling }
   if (options.thermalStep) setup.thermalStep = options.thermalStep
   return setup
 }
@@ -75,6 +82,7 @@ export function coarseSetup(full: SimSetup): SimSetup {
     separable: separableKernel(kernel, grid.pitchMm),
     grid,
     plan: { grid, marginCells, cols: 1, rows: 1, tiles: [{ col: 0, row: 0, core: whole, padded: whole }] },
+    tiling: 'regular',
   }
 }
 

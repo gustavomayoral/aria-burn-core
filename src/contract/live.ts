@@ -10,11 +10,13 @@
 //     grow the grid only gains cells; existing cells never move.
 //   - Live tiling. Tiles sit on a fixed absolute lattice instead of splitting
 //     the current grid evenly: tile (col, row) owns lattice cells
-//     [col·C, (col+1)·C) × [row·C, (row+1)·C), C = TILE_MAX_CELLS − 2·marginCells,
-//     clipped to the job grid, padded by marginCells like planTiles. A tile
-//     exists once the grid reaches it (lazy allocation) and never moves, so a
+//     [col·C, (col+1)·C) × [row·C, (row+1)·C), C = S − 2·marginCells, with S
+//     the tile side from the GPU byte budget (tiling.ts), clipped to the job
+//     grid, padded by marginCells like planTiles. A tile exists once the grid
+//     reaches it (lazy allocation) and never moves while S stays the same, so a
 //     refresh only re-runs tiles whose padded rect received new samples. Every
-//     padded rect stays within TILE_MAX_CELLS². When job.loaded arrives the job
+//     padded rect stays within S². If S shrinks (an allocation failed) the
+//     lattice is rebuilt and every tile re-runs. When job.loaded arrives the job
 //     switches to planTiles; both match untiled within the seam tolerance.
 //   - Live head. headS = max(job.progress plannedS, end of the last sample
 //     received). Before plan.done the timeline is [0, headS] and grows; after

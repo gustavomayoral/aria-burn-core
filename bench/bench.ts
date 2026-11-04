@@ -9,14 +9,18 @@
 
 import birchJson from '../src/profiles/provisional/birch-ply.json'
 import machineJson from '../src/profiles/provisional/machine-10w-diode.json'
-import { decodeSampleBatch, type JobModel, type MachineProfile } from '../src/contract/index.ts'
+import { decodeSampleBatch, tilePoolBytes, type JobModel, type MachineProfile } from '../src/contract/index.ts'
 import {
   CpuPeakTemperatureStep,
+  GlContextLostError,
   GlOverview,
   GlSim,
   LiveJob,
   SampleStore,
   interimSampler,
+  ledger,
+  planSide,
+  watchContextLoss,
   loadMachineProfile,
   loadMaterialProfile,
   setupJob,
@@ -53,8 +57,32 @@ const spikeMachine: MachineProfile = { ...machine, spot: { sigmaXMm: 0.05, sigma
 
 const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false, preserveDrawingBuffer: true })
 if (!gl) throw new Error('WebGL2 unavailable')
-const sim = new GlSim(gl)
-const overview = new GlOverview(gl, 2048)
+// Rebuilt after a context loss (BURN-36): everything on the GPU is derived, so recovery is new objects.
+let sim = new GlSim(gl)
+let overview = new GlOverview(gl, 2048)
+let restored: (() => void) | null = null
+let lostAt: (() => void) | null = null
+const contextWatch = watchContextLoss(canvas, {
+  onLost: () => {
+    log('webglcontextlost: waiting for restore')
+    lostAt?.()
+  },
+  onRestored: () => {
+    sim = new GlSim(gl)
+    overview = new GlOverview(gl, 2048)
+    log(`webglcontextrestored: rebuilt GlSim (tile side cap ${sim.maxTileSide})`)
+    restored?.()
+  },
+})
+const waitFor = (set: (f: () => void) => void, timeoutMs: number) =>
+  new Promise<boolean>((resolve) => {
+    const t = setTimeout(() => resolve(false), timeoutMs)
+    set(() => {
+      clearTimeout(t)
+      resolve(true)
+    })
+  })
+const mb = (bytes: number) => `${(bytes / 2 ** 20).toFixed(0)} MiB`
 
 function storeFor(job: JobModel, m: MachineProfile) {
   const t0 = performance.now()
@@ -425,7 +453,7 @@ async function runLive(steps = 10, only?: number[]): Promise<void> {
       const upTo = Math.round((n * i) / steps)
       for (; fed < upTo; fed++) live.onBatch(plan.batches[fed]!)
       const t0 = performance.now()
-      const setup = live.setup()!
+      const setup = sim.fit(live.store, live.setup()!)
       const t1 = performance.now()
       sim.syncSamples(live.store)
       sim.thermal(live.store, setup)
@@ -461,6 +489,139 @@ async function runLive(steps = 10, only?: number[]): Promise<void> {
   ;(window as unknown as { __benchLive: string }).__benchLive = lines.join('\n')
 }
 
+/**
+ * BURN-36: what this GPU actually allocates, and whether the byte budget,
+ * smaller-tile fallback and context recovery hold. Run it in a fresh browser
+ * process: an earlier context loss in the same process may skew the numbers.
+ *   1. Step a full tile pool up in size (alone, then beside a 4096² overview
+ *      as the app's burn view keeps) until the GPU refuses it.
+ *   2. The 5 µm 100 mm job, planned with GlSim.tileSide().
+ *   3. A forced allocation failure (failPoolAboveBytes) on the spike job: it must fall back and conserve energy.
+ *   4. Lose and restore the context (WEBGL_lose_context), rebuild, re-run.
+ */
+async function runTiles(): Promise<void> {
+  lines.length = 0
+  const pass: Record<string, boolean> = {}
+  log('== Tile budget (BURN-36) ==')
+  log(`user agent: ${navigator.userAgent}`)
+  log(`gl renderer: ${sim.caps.renderer}`)
+  log(`MAX_TEXTURE_SIZE ${sim.caps.maxTextureSize} · MAX_RENDERBUFFER_SIZE ${sim.caps.maxRenderbufferSize}`)
+  log(`gl error before: ${gl!.getError()} · budget ${mb(sim.gpuBudgetBytes)} · tile side now ${sim.tileSide()} · resident ${mb(ledger(gl!).total)}`)
+  sim.releaseTargets()
+
+  const sides = [2048, 3072, 4096, 4608, 5120, 5632, 6016, 6400, 6711, 7168, 7680, 8192, 8704, 9000]
+  const step = async (label: string, withOverview: boolean): Promise<number> => {
+    log()
+    log(`-- pool step: ${label} --`)
+    const big = withOverview ? new GlOverview(gl!) : null
+    big?.resize(20000, 20000)
+    if (big) log(`overview ${big.width}² resident: ${mb(ledger(gl!).total)}`)
+    let largest = 0
+    for (const side of sides) {
+      const t0 = performance.now()
+      try {
+        const bytes = sim.probePool(side)
+        largest = side
+        log(`  ${String(side).padStart(5)}² pool ${mb(bytes).padStart(9)} · resident ${mb(ledger(gl!).total).padStart(9)} · ok ${ms(performance.now() - t0)}`)
+      } catch (e) {
+        const lost = gl!.isContextLost()
+        log(`  ${String(side).padStart(5)}² pool ${mb(tilePoolBytes(side, side)).padStart(9)} · REFUSED ${String(e)}${lost ? ' · CONTEXT LOST' : ''}`)
+        if (lost) {
+          const back = await waitFor((f) => (restored = f), 10000)
+          log(back ? '  context restored' : '  context NOT restored within 10 s')
+          return largest
+        }
+        break
+      }
+      await nextFrame()
+    }
+    sim.releaseTargets()
+    big?.dispose()
+    log(`  largest pool that allocated: ${largest ? `${largest}² (${mb(tilePoolBytes(largest, largest))})` : 'none'}`)
+    return largest
+  }
+  const alone = await step('pool alone', false)
+  const beside = await step('beside a 4096² overview (the burn view)', true)
+  log()
+  log(`suggested GPU budget: ~${mb(tilePoolBytes(beside || alone, beside || alone) + (beside ? 464e6 : 0))} (largest pool beside the overview, plus the overview)`)
+
+  log()
+  log('-- 5 µm 100 mm job, planned with GlSim.fit() --')
+  try {
+    const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), machine)
+    const setup = sim.fit(job.store, setupJob(job.store.burnBounds!, machine, birch), overview)
+    log(`samples ${job.store.count.toLocaleString()} · grid ${setup.grid.width} × ${setup.grid.height} · tiles ${setup.plan.cols} × ${setup.plan.rows} (padded ≤ ${planSide(setup.plan)}) · resident before the pool ${mb(ledger(gl!).total)}`)
+    const first = timedRun(() => sim.run(job.store, setup, { overview }))
+    overview.drawToCanvas()
+    await nextFrame()
+    const second = timedRun(() => sim.run(job.store, setup, { overview }))
+    const r = second.result
+    log(`first ${ms(first.ms)} · second ${ms(second.ms)} · ran ${r.tileCount} tiles (padded ≤ ${planSide(r.plan)}) · replanned ${r.replanned} · failed sides ${r.failedSides.join(', ') || 'none'}`)
+    log(`resident after: ${mb(ledger(gl!).total)} · context lost: ${gl!.isContextLost()}`)
+    pass['5 µm job renders without context loss'] = !gl!.isContextLost()
+  } catch (e) {
+    log(`FAILED: ${String(e)}`)
+    pass['5 µm job renders without context loss'] = false
+    if (e instanceof GlContextLostError) await waitFor((f) => (restored = f), 10000)
+  }
+  sim.releaseTargets()
+
+  log()
+  log('-- forced allocation failure: spike job, pools over 2048² refused --')
+  try {
+    const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), spikeMachine)
+    const setup = setupJob(job.store.burnBounds!, spikeMachine, birchFluence)
+    const forced = new GlSim(gl!, { failPoolAboveBytes: tilePoolBytes(2048, 2048) })
+    const r = forced.run(job.store, setup, { measureEnergy: true })
+    const e = r.energy!
+    const ok = r.failedSides.length > 0 && planSide(r.plan) <= 2048 && Math.abs(e.blurVJ / e.expectedJ - 1) <= 0.01
+    log(`setup tile ${planSide(setup.plan)} → ran ${r.tileCount} tiles ≤ ${planSide(r.plan)} · failed ${r.failedSides.join(', ')} · learned cap ${forced.maxTileSide}`)
+    energyTable('after fallback', e)
+    pass['forced failure falls back to smaller tiles'] = ok
+    forced.releaseTargets()
+  } catch (e) {
+    log(`FAILED: ${String(e)}`)
+    pass['forced failure falls back to smaller tiles'] = false
+  }
+
+  log()
+  log('-- context loss and recovery (WEBGL_lose_context) --')
+  const lose = gl!.getExtension('WEBGL_lose_context')
+  if (!lose) log('WEBGL_lose_context unavailable: skipped')
+  else {
+    const lostP = waitFor((f) => (lostAt = f), 5000)
+    lose.loseContext()
+    const wasLost = await lostP
+    // restoreContext is ignored until the lost event has finished dispatching (Chrome).
+    await new Promise((r) => setTimeout(r, 50))
+    let threw = ''
+    try {
+      sim.run(storeFor(squareJob(5, 5, 10, 900, 600), spikeMachine).store, setupJob({ minXMm: 4, minYMm: 4, maxXMm: 16, maxYMm: 16 }, spikeMachine, birchFluence))
+    } catch (e) {
+      threw = e instanceof GlContextLostError ? 'GlContextLostError' : String(e)
+    }
+    const backP = waitFor((f) => (restored = f), 5000)
+    lose.restoreContext()
+    const back = await backP
+    let reran = false
+    try {
+      const small = storeFor(squareJob(5, 5, 10, 900, 600), spikeMachine)
+      const r = sim.run(small.store, setupJob(small.store.burnBounds!, spikeMachine, birchFluence), { overview })
+      overview.drawToCanvas()
+      reran = r.sampleCount > 0 && !gl!.isContextLost()
+    } catch (e) {
+      log(`re-run FAILED: ${String(e)}`)
+    }
+    log(`lost event ${wasLost} · run on lost context threw ${threw || 'nothing'} · restored ${back} · re-run after rebuild ${reran} · losses seen ${contextWatch.losses}`)
+    pass['context loss recovers'] = wasLost && threw === 'GlContextLostError' && back && reran
+  }
+  log()
+  for (const [k, v] of Object.entries(pass)) log(`${v ? 'PASS' : 'FAIL'}  ${k}`)
+  log(`gl error: ${gl!.getError()}`)
+  ;(window as unknown as { __benchTiles: string }).__benchTiles = lines.join('\n')
+}
+;(window as unknown as { __runTiles: typeof runTiles }).__runTiles = runTiles
+
 /** Quick loop for tuning: thermal step only, on the spike job (store cached across calls). */
 let costStore: ReturnType<typeof storeFor> | null = null
 async function thermalCost(runs = 2): Promise<string> {
@@ -481,14 +642,15 @@ document.getElementById('thermal')!.addEventListener('click', () => void runTher
 ;(window as unknown as { __runThermal: typeof runThermal }).__runThermal = runThermal
 document.getElementById('live')!.addEventListener('click', () => void runLive().catch((e) => log(`ERROR ${String(e)}`)))
 ;(window as unknown as { __runLive: typeof runLive }).__runLive = runLive
+document.getElementById('tiles')!.addEventListener('click', () => void runTiles().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('run')!.addEventListener('click', () => void run().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('fine')!.addEventListener('click', () => void runFine().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))
 ;(window as unknown as { __runBench: typeof run; __runFine: typeof runFine }).__runBench = run
 
-/** ?auto=live (or run, fine, thermal; comma-separated): run on load and POST each report to the bench server. */
+/** ?auto=live (or run, fine, thermal, tiles; comma-separated): run on load and POST each report to the bench server. */
 async function autoRun(names: string[]): Promise<void> {
-  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive() }
+  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles }
   for (const name of names) {
     const fn = runs[name]
     if (!fn) {

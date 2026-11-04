@@ -11,7 +11,11 @@ import {
   SAMPLE_FIELD_INDEX,
   SAMPLE_FIELD_COUNT,
   TILE_MAX_CELLS,
+  GPU_BUDGET_BYTES,
+  GPU_BUDGET_LARGE_BYTES,
+  TILE_MIN_CELLS,
   Verdict,
+  defaultGpuBudgetBytes,
   buildContractSchema,
   classifyFluence,
   classifyThermal,
@@ -19,6 +23,8 @@ import {
   gridPitchMm,
   planJobGrid,
   planLiveTiles,
+  tilePoolBytes,
+  tileSideForBytes,
   validate,
   type JobModel,
   type MachineProfile,
@@ -26,6 +32,7 @@ import {
 } from '../contract/index.ts'
 import {
   CellReader,
+  GlAllocationError,
   LiveJob,
   SampleBins,
   SampleStore,
@@ -38,11 +45,16 @@ import {
   labToSrgb8,
   loadMachineProfile,
   loadMaterialProfile,
+  planSide,
+  replan,
   responseParams,
   setupJob,
   simulateCoarseCpu,
   simulateCpu,
   stitch,
+  tileSide,
+  watchContextLoss,
+  withTileFallback,
   type SimSetup,
 } from './index.ts'
 import { concatJobs, rasterJob, squareJob } from './test-jobs.ts'
@@ -332,10 +344,133 @@ describe('tiling', () => {
     }
   })
 
-  it('the default budget is 9000² cells', () => {
+  it('without a GPU budget the plan only obeys the 9000-cell hard cap', () => {
     const big = setupJob({ minXMm: 0, minYMm: 0, maxXMm: 100, maxYMm: 100 }, machine, wood)
     expect(big.plan.tiles.length).toBeGreaterThan(1)
     for (const t of big.plan.tiles) expect(Math.max(t.padded.width, t.padded.height)).toBeLessThanOrEqual(TILE_MAX_CELLS)
+  })
+})
+
+describe('tile budget by GPU bytes (BURN-36)', () => {
+  const job = concatJobs(
+    rasterJob({ x0Mm: 1, y0Mm: 1, widthMm: 8, heightMm: 3, intervalMm: 0.1, feedMmPerMin: 6000, s: 400 }),
+    squareJob(2, 4.5, 3, 900, 700),
+  )
+  const { store } = storeFor(job, roundSpot)
+  const isAlloc = (e: unknown) => e instanceof GlAllocationError
+
+  it('derives the tile side from bytes: 17 bytes a cell, capped at 9000', () => {
+    expect(tilePoolBytes(1, 1)).toBe(17)
+    // Iris Xe (BURN-33): a 6711² padded tile is a ~767 MB pool.
+    expect(tileSideForBytes(tilePoolBytes(6711, 6711))).toBe(6711)
+    expect(tilePoolBytes(tileSideForBytes(767e6) + 1, tileSideForBytes(767e6) + 1)).toBeGreaterThan(767e6)
+    expect(tileSideForBytes(1e12)).toBe(TILE_MAX_CELLS)
+    expect(tileSideForBytes(-5)).toBe(0)
+  })
+
+  it('picks the conservative budget for integrated Intel GPUs', () => {
+    expect(defaultGpuBudgetBytes('ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)')).toBe(GPU_BUDGET_BYTES)
+    expect(defaultGpuBudgetBytes('ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)')).toBe(GPU_BUDGET_LARGE_BYTES)
+    expect(GPU_BUDGET_LARGE_BYTES).toBeGreaterThan(GPU_BUDGET_BYTES)
+  })
+
+  it('subtracts what else is resident, within the device cap and never below the minimum', () => {
+    const budget = tilePoolBytes(6000, 6000)
+    expect(tileSide({ budgetBytes: budget, otherBytes: 0 })).toBe(6000)
+    // A 4096² overview with mips (~464 MB) leaves a much smaller tile.
+    expect(tileSide({ budgetBytes: budget, otherBytes: 464e6 })).toBeLessThan(4000)
+    expect(tileSide({ budgetBytes: budget, otherBytes: 0, maxSide: 3000 })).toBe(3000)
+    // A learned or device cap wins over the minimum.
+    expect(tileSide({ budgetBytes: budget, otherBytes: budget * 2, maxSide: 800 })).toBe(800)
+    expect(tileSide({ budgetBytes: budget, otherBytes: budget * 2 })).toBe(TILE_MIN_CELLS)
+  })
+
+  it('a forced allocation failure falls back to smaller tiles that still match untiled', () => {
+    const untiled = setupJob(job.burnBounds!, roundSpot, wood)
+    const start = planSide(untiled.plan)
+    // The "GPU" refuses any pool bigger than 160².
+    const limit = tilePoolBytes(160, 160)
+    const sides: number[] = []
+    const run = withTileFallback(
+      start,
+      (side) => {
+        sides.push(side)
+        const plan = replan(untiled, side)
+        const p = planSide(plan)
+        if (tilePoolBytes(p, p) > limit) throw new GlAllocationError(`refused ${p}²`, tilePoolBytes(p, p))
+        return { plan, tiles: simulateCpu(store, { ...untiled, plan }) }
+      },
+      isAlloc,
+      64,
+    )
+    expect(run.failed.length).toBeGreaterThan(0)
+    expect(run.failed[0]).toBe(start)
+    expect(sides).toEqual([...run.failed, run.side])
+    expect(planSide(run.result.plan)).toBeLessThanOrEqual(160)
+    expect(run.result.plan.tiles.length).toBeGreaterThan(1)
+    const d = compareRuns(untiled, stitch(simulateCpu(store, untiled)), stitch(run.result.tiles))
+    expect(d.maxRelF).toBeLessThan(1e-5)
+    expect(d.colorDelta).toBeLessThanOrEqual(1)
+  })
+
+  it('gives up below the minimum side, and other errors are not retried', () => {
+    let calls = 0
+    const refuse = () => {
+      calls++
+      throw new GlAllocationError('refused')
+    }
+    expect(() => withTileFallback(1024, refuse, isAlloc, 512)).toThrow(GlAllocationError)
+    expect(calls).toBe(2) // 1024, then 724; 512 would be next but 724·√½ < 512
+    calls = 0
+    expect(() =>
+      withTileFallback(
+        1024,
+        () => {
+          calls++
+          throw new Error('shader compile')
+        },
+        isAlloc,
+      ),
+    ).toThrow('shader compile')
+    expect(calls).toBe(1)
+  })
+
+  it('live tiling respects the same budget and keeps its lattice when replanned', () => {
+    const live = new LiveJob(1, 'budget', roundSpot, wood)
+    const { plan } = storeFor(job, roundSpot)
+    for (const b of plan.batches) live.onBatch(b)
+    const setup = live.setup(160)!
+    expect(setup.tiling).toBe('live')
+    expect(planSide(setup.plan)).toBeLessThanOrEqual(160)
+    // A smaller side from a failed allocation rebuilds the lattice, not a regular split.
+    const smaller = replan(setup, 120)
+    const lattice = planLiveTiles(setup.grid, setup.kernel, 120)
+    expect(smaller.tiles.map((t) => t.core)).toEqual(lattice.tiles.map((t) => t.core))
+    expect(planSide(smaller)).toBeLessThanOrEqual(120)
+    // Live grids come from the samples' bounds, so compare against an untiled run on the same grid.
+    const untiled = setupJob(live.store.burnBounds!, roundSpot, wood)
+    expect(untiled.grid).toEqual(setup.grid)
+    const d = compareRuns(untiled, stitch(simulateCpu(live.store, untiled)), stitch(simulateCpu(live.store, { ...setup, plan: smaller })))
+    expect(d.maxRelF).toBeLessThan(1e-5)
+  })
+})
+
+describe('WebGL context loss (BURN-36)', () => {
+  it('prevents the default so the context comes back, and reports loss and restore', () => {
+    const canvas = new EventTarget()
+    const seen: string[] = []
+    const watch = watchContextLoss(canvas, { onLost: () => seen.push('lost'), onRestored: () => seen.push('restored') })
+    expect(watch.state).toBe('ok')
+    const lost = new Event('webglcontextlost', { cancelable: true })
+    canvas.dispatchEvent(lost)
+    expect(lost.defaultPrevented).toBe(true)
+    expect(watch.state).toBe('lost')
+    canvas.dispatchEvent(new Event('webglcontextrestored'))
+    expect(watch.state).toBe('restored')
+    expect(watch.losses).toBe(1)
+    watch.stop()
+    canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    expect(seen).toEqual(['lost', 'restored'])
   })
 })
 

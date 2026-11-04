@@ -71,12 +71,16 @@ export class LiveJob {
 
   /**
    * Current setup: lattice tiles while streaming, the regular plan once
-   * job.loaded has arrived. Null until something burns.
+   * job.loaded has arrived. Null until something burns. On the GPU, pass the
+   * result through GlSim.fit() so live tiles fit the byte budget (BURN-36);
+   * `maxTileCells` overrides the constructor's.
    */
-  setup(): SimSetup | null {
+  setup(maxTileCells?: number): SimSetup | null {
     const bounds = this.job ? this.job.burnBounds : this.store.burnBounds
     if (!bounds) return null
-    return setupJob(bounds, this.machine, this.material, { ...this.options, tiling: this.job ? 'regular' : 'live' })
+    const options: SetupOptions = { ...this.options, tiling: this.job ? 'regular' : 'live' }
+    if (maxTileCells !== undefined) options.maxTileCells = maxTileCells
+    return setupJob(bounds, this.machine, this.material, options)
   }
 
   stats(): LiveJobStats {

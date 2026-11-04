@@ -29,7 +29,7 @@ import type { SimSetup } from '../job.ts'
 import type { SampleStore } from '../sample-store.ts'
 import { BURN_VIEW_FS, DETAIL_PACK_FS, VERDICT_SUMMARY_FS } from './burn-view-shaders.ts'
 import { GlOverview, mipTexture, type GlRunResult, type GlSim } from './gl-sim.ts'
-import { Program, framebuffer, target, texture, type Target } from './gl-util.ts'
+import { Program, deleteTexture, framebuffer, target, texture, type Target } from './gl-util.ts'
 import { FULLSCREEN_VS } from './shaders.ts'
 
 /** One drawable layer: textures plus where their texels sit in mm. */
@@ -119,7 +119,7 @@ class DetailTargets {
   }
 
   dispose(): void {
-    for (const t of [this.color, this.field, this.cover, this.verdict]) this.gl.deleteTexture(t)
+    for (const t of [this.color, this.field, this.cover, this.verdict]) deleteTexture(this.gl, t)
     this.gl.deleteFramebuffer(this.fbo)
   }
 }
@@ -249,8 +249,8 @@ export class GlBurnView {
   private dropOffscreen(): void {
     const o = this.offscreen
     if (!o) return
-    this.gl.deleteTexture(o.color)
-    this.gl.deleteTexture(o.depth)
+    deleteTexture(this.gl, o.color)
+    deleteTexture(this.gl, o.depth)
     this.gl.deleteFramebuffer(o.fbo)
     this.offscreen = null
   }
@@ -361,7 +361,7 @@ export class GlBurnView {
     const raw = new Uint32Array(w * h * 4)
     gl.readBuffer(gl.COLOR_ATTACHMENT0)
     gl.readPixels(0, 0, w, h, gl.RGBA_INTEGER, gl.UNSIGNED_INT, raw)
-    gl.deleteTexture(t.tex)
+    deleteTexture(gl, t.tex)
     gl.deleteFramebuffer(t.fbo)
     const verdict = new Uint8Array(w * h)
     for (let i = 0; i < verdict.length; i++) verdict[i] = raw[i * 4]!

@@ -13,7 +13,7 @@
 // and the response reads the bulk-temperature map for fire risk.
 
 import type { CellRect, GridSpec, Tile, TilePlan } from '../../contract/index.ts'
-import { UNTOUCHED_FRACTION, verdictThresholds } from '../../contract/index.ts'
+import { TILE_MAX_CELLS, defaultGpuBudgetBytes, UNTOUCHED_FRACTION, tilePoolBytes, verdictThresholds } from '../../contract/index.ts'
 import { depositCpu, type StageEnergy } from '../cpu.ts'
 import { coarseSetup, type SimSetup } from '../job.ts'
 import type { Kernel1D, SkewTaps } from '../kernel.ts'
@@ -23,7 +23,21 @@ import type { SampleStore } from '../sample-store.ts'
 import { defaultThermalStep, peakTemperatureModel, thermalFor, type ThermalResult } from '../thermal.ts'
 import { GlPeakTemperatureStep } from './gl-thermal.ts'
 import { PER_SAMPLE_WIDTH } from './thermal-shaders.ts'
-import { Program, framebuffer, target, texture, type Target } from './gl-util.ts'
+import { planSide, replan, shrinkSide, tileSide, withTileFallback } from '../tile-budget.ts'
+import {
+  GlAllocationError,
+  GlContextLostError,
+  Program,
+  assertContext,
+  deleteTexture,
+  framebuffer,
+  ledger,
+  storage,
+  target,
+  texture,
+  trackBuffer,
+  type Target,
+} from './gl-util.ts'
 import {
   BLUR_FS,
   DEPOSIT_FS,
@@ -75,6 +89,12 @@ export interface GlRunResult {
   cpuDeposit: boolean
   /** The thermal step's result when the material has a thermal model, else null. */
   thermal: ThermalResult | null
+  /** The plan that ran: the setup's, or a smaller one when the byte budget or an allocation failure required it (BURN-36). */
+  plan: TilePlan
+  /** True when `plan` differs from the setup's (callers tracking dirty tiles should re-run everything). */
+  replanned: boolean
+  /** Tile sides that failed to allocate during this run, largest first. */
+  failedSides: number[]
 }
 
 /** A finished tile's GPU outputs, valid only inside onTile. */
@@ -98,7 +118,7 @@ export interface GlTileView {
 }
 
 const FLT_BIG = 3.0e38
-/** Bin edge in cells for tiled deposit (tiles are up to 9000 cells, so ~18 bins across). */
+/** Bin edge in cells for tiled deposit (tiles are at most TILE_MAX_CELLS = 9000, so ≤ ~18 bins across). */
 const BIN_CELLS = 512
 /** Coarse checkpoints: at most this many, at least this many samples apart. */
 const CHECKPOINT_MAX = 16
@@ -116,28 +136,61 @@ class TargetSet {
   readonly depthFbo: WebGLFramebuffer
   readonly verdictFbo: WebGLFramebuffer
 
+  /** Allocates the whole pool or nothing: a refused target frees the ones already made. */
   constructor(
     private readonly gl: WebGL2RenderingContext,
     readonly width: number,
     readonly height: number,
   ) {
-    this.a = target(gl, gl.R32F, width, height)
-    this.b = target(gl, gl.R32F, width, height)
-    this.color = texture(gl, gl.RGBA8, width, height)
-    this.depth = texture(gl, gl.R32F, width, height)
-    this.verdict = texture(gl, gl.R8UI, width, height)
-    this.responseFbo = framebuffer(gl, this.color, this.depth, this.verdict)
-    this.colorFbo = framebuffer(gl, this.color)
-    this.depthFbo = framebuffer(gl, this.depth)
-    this.verdictFbo = framebuffer(gl, this.verdict)
+    const texs: WebGLTexture[] = []
+    const fbos: WebGLFramebuffer[] = []
+    const tex = (internal: number) => {
+      const t = texture(gl, internal, width, height)
+      texs.push(t)
+      return t
+    }
+    const fb = (...ts: WebGLTexture[]) => {
+      const f = framebuffer(gl, ...ts)
+      fbos.push(f)
+      return f
+    }
+    try {
+      const aTex = tex(gl.R32F)
+      this.a = { tex: aTex, fbo: fb(aTex) }
+      const bTex = tex(gl.R32F)
+      this.b = { tex: bTex, fbo: fb(bTex) }
+      this.color = tex(gl.RGBA8)
+      this.depth = tex(gl.R32F)
+      this.verdict = tex(gl.R8UI)
+      this.responseFbo = fb(this.color, this.depth, this.verdict)
+      this.colorFbo = fb(this.color)
+      this.depthFbo = fb(this.depth)
+      this.verdictFbo = fb(this.verdict)
+    } catch (e) {
+      for (const t of texs) deleteTexture(gl, t)
+      for (const f of fbos) gl.deleteFramebuffer(f)
+      if (e instanceof GlAllocationError) throw new GlAllocationError(`tile pool ${width}×${height}: ${e.message}`, tilePoolBytes(width, height))
+      throw e
+    }
+  }
+
+  get bytes(): number {
+    return tilePoolBytes(this.width, this.height)
   }
 
   dispose(): void {
     const gl = this.gl
-    for (const t of [this.a.tex, this.b.tex, this.color, this.depth, this.verdict]) gl.deleteTexture(t)
+    for (const t of [this.a.tex, this.b.tex, this.color, this.depth, this.verdict]) deleteTexture(gl, t)
     for (const f of [this.a.fbo, this.b.fbo, this.responseFbo, this.colorFbo, this.depthFbo, this.verdictFbo]) gl.deleteFramebuffer(f)
   }
 }
+
+/**
+ * Tile sides learned per GPU (renderer string) after an allocation failed, so
+ * a GlSim rebuilt after a context loss starts below the size that killed it.
+ * Lives for the page; a reload starts from the budget again.
+ */
+const learnedTileSides = new Map<string, number>()
 
 /** Mip levels for a full chain down to 1×1. */
 export const mipLevels = (w: number, h: number) => Math.floor(Math.log2(Math.max(w, h, 1))) + 1
@@ -199,7 +252,7 @@ export class GlOverview {
   }
 
   dispose(): void {
-    for (const t of [this.color, this.verdict, this.field, this.cover]) if (t) this.gl.deleteTexture(t)
+    for (const t of [this.color, this.verdict, this.field, this.cover]) deleteTexture(this.gl, t)
     if (this.fbo) this.gl.deleteFramebuffer(this.fbo)
     this.color = this.verdict = this.field = this.cover = this.fbo = null
     this.width = this.height = 0
@@ -238,9 +291,11 @@ export class GlOverview {
 
 /** A texture with a full, trilinearly filtered mip chain (RGBA8, or RGBA16F: filterable without OES_texture_float_linear). */
 export function mipTexture(gl: WebGL2RenderingContext, internal: number, w: number, h: number): WebGLTexture {
-  const t = gl.createTexture()!
-  gl.bindTexture(gl.TEXTURE_2D, t)
-  gl.texStorage2D(gl.TEXTURE_2D, mipLevels(w, h), internal, w, h)
+  const levels = mipLevels(w, h)
+  const texel = internal === gl.RGBA16F ? 8 : 4
+  let bytes = 0
+  for (let l = 0; l < levels; l++) bytes += Math.max(1, w >> l) * Math.max(1, h >> l) * texel
+  const t = storage(gl, levels, internal, w, h, bytes)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -309,12 +364,25 @@ export class GlSim {
   private thermalIds = 0
   /** Thermal state of the run in progress; deposits read dose energies when set. */
   private active: NonNullable<GlSim['thermalState']> | null = null
+  /** Budget for everything a run keeps on the GPU (BURN-36). */
+  readonly gpuBudgetBytes: number
+  /** Largest tile side known to allocate on this GPU (shrinks after a failure). */
+  maxTileSide: number
+  private readonly failPoolAboveBytes: number
+  /** Size of the last pool that failed to allocate, for the context-loss path. */
+  private failedPoolBytes = 0
 
-  /** `forceCpuDeposit` exercises the no-EXT_float_blend fallback on hardware that has it. */
+  /**
+   * `forceCpuDeposit` exercises the no-EXT_float_blend fallback on hardware that has it.
+   * `gpuBudgetBytes` overrides the contract's defaultGpuBudgetBytes(renderer); `maxTileSide` caps the tile side.
+   * `failPoolAboveBytes` makes any tile pool larger than this fail as if the GPU refused it
+   * (tests and bench exercise the smaller-tile fallback with it).
+   */
   constructor(
     readonly gl: WebGL2RenderingContext,
-    options: { forceCpuDeposit?: boolean } = {},
+    options: { forceCpuDeposit?: boolean; gpuBudgetBytes?: number; maxTileSide?: number; failPoolAboveBytes?: number } = {},
   ) {
+    assertContext(gl)
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('WebGL2: EXT_color_buffer_float is required')
     const floatBlend = !options.forceCpuDeposit && !!gl.getExtension('EXT_float_blend')
     const dbg = gl.getExtension('WEBGL_debug_renderer_info')
@@ -326,6 +394,9 @@ export class GlSim {
       vendor: String(dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR)),
       timerQuery: !!gl.getExtension('EXT_disjoint_timer_query_webgl2'),
     }
+    this.gpuBudgetBytes = options.gpuBudgetBytes ?? defaultGpuBudgetBytes(this.caps.renderer)
+    this.maxTileSide = Math.min(options.maxTileSide ?? TILE_MAX_CELLS, learnedTileSides.get(this.caps.renderer) ?? TILE_MAX_CELLS)
+    this.failPoolAboveBytes = options.failPoolAboveBytes ?? Infinity
     this.deposit = new Program(gl, DEPOSIT_VS, DEPOSIT_FS)
     this.depositThermal = new Program(gl, DEPOSIT_THERMAL_VS, DEPOSIT_FS)
     this.blur = new Program(gl, FULLSCREEN_VS, BLUR_FS)
@@ -399,8 +470,8 @@ export class GlSim {
   private dropThermal(): void {
     const t = this.thermalState
     if (!t) return
-    if (t.ownsPerSample) this.gl.deleteTexture(t.perSample)
-    if (t.ownsBulk && t.bulk) this.gl.deleteTexture(t.bulk)
+    if (t.ownsPerSample) deleteTexture(this.gl, t.perSample)
+    if (t.ownsBulk) deleteTexture(this.gl, t.bulk)
     this.thermalState = null
   }
 
@@ -413,6 +484,7 @@ export class GlSim {
     if (store.count > this.sampleCapacity) {
       this.sampleCapacity = Math.max(store.count, Math.ceil(this.sampleCapacity * 1.5), 4096)
       gl.bufferData(gl.ARRAY_BUFFER, this.sampleCapacity * 12, gl.DYNAMIC_DRAW)
+      trackBuffer(gl, this.sampleBuffer, this.sampleCapacity * 12)
       this.uploadedCount = 0
     }
     if (store.count > this.uploadedCount) {
@@ -427,9 +499,81 @@ export class GlSim {
     const cur = this.pools.get(kind)
     if (cur && cur.width >= w && cur.height >= h) return cur
     cur?.dispose()
-    const next = new TargetSet(this.gl, Math.max(w, cur?.width ?? 0), Math.max(h, cur?.height ?? 0))
+    this.pools.delete(kind)
+    if (cur && this.lastFbo === cur.a.fbo) this.lastFbo = null
+    const pw = Math.max(w, cur?.width ?? 0)
+    const ph = Math.max(h, cur?.height ?? 0)
+    if (tilePoolBytes(pw, ph) > this.failPoolAboveBytes)
+      throw new GlAllocationError(`tile pool ${pw}×${ph}: refused by failPoolAboveBytes`, tilePoolBytes(pw, ph))
+    let next: TargetSet
+    try {
+      next = new TargetSet(this.gl, pw, ph)
+    } catch (e) {
+      this.failedPoolBytes = tilePoolBytes(pw, ph)
+      throw e
+    }
     this.pools.set(kind, next)
     return next
+  }
+
+  /**
+   * Padded tile side that fits the byte budget next to everything else on the
+   * GPU now (overviews and burn views on this context included), within the
+   * device caps and any side learned from a failure. Pass the store about to
+   * run so its sample and bin buffers are counted before they're uploaded.
+   * Plan with it (setupJob / LiveJob.setup maxTileCells) so the run doesn't
+   * have to replan.
+   */
+  tileSide(store?: SampleStore): number {
+    const full = this.pools.get('full')
+    let other = ledger(this.gl).total - (full?.bytes ?? 0)
+    if (store) {
+      if (this.uploadedStore !== store) other += Math.max(0, store.count * 12 - this.sampleCapacity * 12)
+      if (this.binStore !== store) other += store.count * 16
+    }
+    return tileSide({ budgetBytes: this.gpuBudgetBytes, otherBytes: other, maxSide: Math.min(this.maxTileSide, this.caps.maxTextureSize) })
+  }
+
+  /**
+   * Allocate what a full run needs besides the tile pool, so the budget sees
+   * it, and return the tile side left: samples, the thermal step's textures
+   * (per-sample energies are 8 B a sample) and, whenever the job could be
+   * more than one tile, the spatial bins.
+   */
+  private prepare(store: SampleStore, setup: SimSetup, overview?: GlOverview): number {
+    overview?.resize(setup.grid.width, setup.grid.height)
+    this.syncSamples(store)
+    this.thermalTextures(store, setup)
+    const { width, height } = setup.grid
+    if (setup.plan.tiles.length > 1 || Math.max(width, height) > this.tileSide()) this.ensureBins(store, setup)
+    return this.tileSide(store)
+  }
+
+  /**
+   * The setup with a plan that fits this GPU's budget now (BURN-36): the same
+   * setup if it already fits, else one replanned (regular or live lattice)
+   * with smaller tiles. Plan with this before a full run so the run doesn't
+   * replan under you (e.g. when tracking a live job's dirty tiles). Pass the
+   * overview the run will composite into so it is counted too.
+   */
+  fit(store: SampleStore, setup: SimSetup, overview?: GlOverview): SimSetup {
+    const side = this.prepare(store, setup, overview)
+    return planSide(setup.plan) <= side ? setup : { ...setup, plan: replan(setup, side) }
+  }
+
+  /**
+   * Bench probe (BURN-36): allocate one full tile pool of side × side and keep
+   * it, as a run would. Throws GlAllocationError if the GPU refuses it and
+   * GlContextLostError if the context died.
+   */
+  probePool(side: number): number {
+    this.pools.get('full')?.dispose()
+    this.pools.delete('full')
+    this.lastFbo = null
+    const ts = this.pool('full', side, side)
+    this.sync(ts.a.fbo)
+    assertContext(this.gl)
+    return ts.bytes
   }
 
   /** Drop pooled targets, coarse checkpoints and bins (e.g. after a large job closes). */
@@ -447,11 +591,13 @@ export class GlSim {
     gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
+    trackBuffer(gl, this.binBuffer, 0)
+    trackBuffer(gl, this.binIndexBuffer, 0)
   }
 
   private dropCheckpoints(): void {
     for (const t of this.checkpoints?.targets ?? []) {
-      this.gl.deleteTexture(t.tex)
+      deleteTexture(this.gl, t.tex)
       this.gl.deleteFramebuffer(t.fbo)
     }
     this.checkpoints = null
@@ -505,11 +651,10 @@ export class GlSim {
     if (this.active && binned) gl.disableVertexAttribArray(1)
   }
 
-  /** Multi-tile deposit: only the bins that can reach this tile's padded rect. */
-  private depositBinned(store: SampleStore, setup: SimSetup, padded: CellRect, cutoffS: number): void {
+  /** Spatial bins of the store for this grid's pitch, uploaded (rebuilt when the store or pitch changed). */
+  private ensureBins(store: SampleStore, setup: SimSetup): SampleBins {
     const gl = this.gl
-    const { grid } = setup
-    const bucketMm = BIN_CELLS * grid.pitchMm
+    const bucketMm = BIN_CELLS * setup.grid.pitchMm
     if (!this.bins || this.binStore !== store || this.bins.version !== store.version || this.bins.bucketMm !== bucketMm) {
       this.bins = new SampleBins(store, bucketMm)
       this.binStore = store
@@ -517,13 +662,22 @@ export class GlSim {
       gl.bufferData(gl.ARRAY_BUFFER, this.bins.xye, gl.STATIC_DRAW)
       gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
       gl.bufferData(gl.ARRAY_BUFFER, this.bins.index, gl.STATIC_DRAW)
+      trackBuffer(gl, this.binBuffer, this.bins.xye.byteLength)
+      trackBuffer(gl, this.binIndexBuffer, this.bins.index.byteLength)
     }
+    return this.bins
+  }
+
+  /** Multi-tile deposit: only the bins that can reach this tile's padded rect. */
+  private depositBinned(store: SampleStore, setup: SimSetup, padded: CellRect, cutoffS: number): void {
+    const { grid } = setup
+    const bins = this.ensureBins(store, setup)
     // One cell of slack for the bilinear footprint; anything else off the rect is clipped.
     const x0 = grid.originXMm + (padded.x - 1) * grid.pitchMm
     const y0 = grid.originYMm + (padded.y - 1) * grid.pitchMm
     const x1 = grid.originXMm + (padded.x + padded.width + 1) * grid.pitchMm
     const y1 = grid.originYMm + (padded.y + padded.height + 1) * grid.pitchMm
-    for (const [first, count] of this.bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(this.binBuffer, first, count, true)
+    for (const [first, count] of bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(this.binBuffer, first, count, true)
   }
 
   /**
@@ -546,7 +700,7 @@ export class GlSim {
       // Double the spacing: old checkpoint 2i + 1 is new checkpoint i.
       cp.targets.forEach((t, i) => {
         if (i % 2 === 0) {
-          gl.deleteTexture(t.tex)
+          deleteTexture(gl, t.tex)
           gl.deleteFramebuffer(t.fbo)
         }
       })
@@ -692,10 +846,77 @@ export class GlSim {
     return this.runSetup(store, coarseSetup(full), 'coarse', { ...options, timeCutoffS })
   }
 
+  /**
+   * Budget the tiles, then run (BURN-36). A full run whose tiles exceed
+   * tileSide() is replanned smaller up front; if a pool still fails to
+   * allocate, it retries with smaller tiles. Coarse and region runs are one
+   * tile each and have nothing to shrink, so their failures propagate.
+   */
   private runSetup(store: SampleStore, setup: SimSetup, poolKind: 'full' | 'coarse', options: GlRunOptions): GlRunResult {
+    assertContext(this.gl)
+    if (poolKind === 'coarse' || options.region) {
+      const plan = options.region ? regionPlan(setup.plan, options.region) : setup.plan
+      return this.guard(() => this.runPlan(store, setup, plan, poolKind, options))
+    }
+    const budgetSide = this.prepare(store, setup, options.overview)
+    const fits = planSide(setup.plan) <= budgetSide
+    const start = fits ? planSide(setup.plan) : budgetSide
+    const { result, side, failed } = this.guard(() =>
+      withTileFallback(
+        start,
+        (s) => {
+          const plan = s === start && fits ? setup.plan : replan(setup, s)
+          return this.runPlan(store, setup, plan, poolKind, options)
+        },
+        (e) => {
+          if (!(e instanceof GlAllocationError) || this.gl.isContextLost()) return false
+          this.active = null
+          return true
+        },
+      ),
+    )
+    if (failed.length) {
+      // Remember the side that worked for this GPU, here and for a GlSim rebuilt after a context loss.
+      this.maxTileSide = Math.min(this.maxTileSide, side)
+      this.learn()
+    }
+    return { ...result, replanned: result.plan !== setup.plan, failedSides: failed }
+  }
+
+  /** Share the learned side with GlSims rebuilt on this GPU; simulated failures (failPoolAboveBytes) teach nothing. */
+  private learn(): void {
+    if (this.failPoolAboveBytes === Infinity) learnedTileSides.set(this.caps.renderer, this.maxTileSide)
+  }
+
+  /**
+   * Run, turning a context lost mid-run into GlContextLostError. If an
+   * allocation failure took the context with it, the side that failed is
+   * remembered so the GlSim rebuilt on the restored context starts smaller.
+   */
+  private guard<T>(fn: () => T): T {
+    this.failedPoolBytes = 0
+    try {
+      return fn()
+    } catch (e) {
+      this.active = null
+      if (this.gl.isContextLost()) {
+        if (this.failedPoolBytes > 0) {
+          const side = Math.floor(Math.sqrt(this.failedPoolBytes / tilePoolBytes(1, 1)))
+          this.failedPoolBytes = 0
+          if (side > 0) {
+            this.maxTileSide = Math.min(this.maxTileSide, shrinkSide(side))
+            this.learn()
+          }
+        }
+        throw e instanceof GlContextLostError ? e : new GlContextLostError(`WebGL context lost: ${String(e)}`)
+      }
+      throw e
+    }
+  }
+
+  private runPlan(store: SampleStore, setup: SimSetup, plan: TilePlan, poolKind: 'full' | 'coarse', options: GlRunOptions): GlRunResult {
     const gl = this.gl
     const { grid, material, separable } = setup
-    const plan = options.region ? regionPlan(setup.plan, options.region) : setup.plan
     // A region is a small window of a possibly huge job: draw only the bins that reach it.
     const binned = plan.tiles.length > 1 || !!options.region
     for (const t of plan.tiles)
@@ -847,7 +1068,18 @@ export class GlSim {
     options.overview?.finish()
     this.lastFbo = ts.a.fbo
     this.active = null
-    return { sampleCount: n, tileCount: plan.tiles.length, stageMs, energy, cpuDeposit: !this.caps.floatBlend, thermal: th?.result ?? null }
+    assertContext(gl)
+    return {
+      sampleCount: n,
+      tileCount: plan.tiles.length,
+      stageMs,
+      energy,
+      cpuDeposit: !this.caps.floatBlend,
+      thermal: th?.result ?? null,
+      plan,
+      replanned: false,
+      failedSides: [],
+    }
   }
 
   private composite(ov: GlOverview, setup: SimSetup, tile: Tile, ts: TargetSet): void {

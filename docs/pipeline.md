@@ -75,7 +75,11 @@ Normative rules: `src/contract/thermal.ts`. In short:
 
 ## Tiling
 
-- Regular jobs use contract `planTiles`. Padded tiles are ≤ 9000², and the margin is the kernel radius.
+- Regular jobs use contract `planTiles`. The margin is the kernel radius.
+- **Tile budget (BURN-36).** The padded tile side comes from a GPU byte budget, not a fixed 9000²: a tile pool is 17 bytes a cell (2 × R32F, RGBA8, R32F, R8UI), and the samples, bins, thermal per-sample energies (~28 B a sample together) and overviews stay resident beside it. `GlSim.fit(store, setup, overview)` allocates those first and replans the setup so `pool ≤ budget − everything else`, between `TILE_MIN_CELLS` (1024) and the 9000 hard cap. Every allocation made through `gl-util` is counted in a per-context ledger (`ledger(gl).total`).
+- **Budget per GPU.** WebGL can't query GPU memory, so the default is by renderer: 768 MiB on Intel integrated GPUs, 1.5 GiB elsewhere (`defaultGpuBudgetBytes`). Both are provisional until the `?auto=tiles` bench is run on the target hardware.
+- **Smaller-tile fallback.** If a pool still fails (`FRAMEBUFFER_UNSUPPORTED` or `OUT_OF_MEMORY` → `GlAllocationError`), the run retries at about half the pool bytes and remembers the side that worked for that GPU, so a GlSim rebuilt after a context loss starts below it. `GlRunResult.plan` / `replanned` say what ran.
+- **Context loss.** `watchContextLoss(canvas, { onLost, onRestored })` prevents the default so the browser restores the context. Runs on a lost context throw `GlContextLostError`. On restore, build new `GlSim` / `GlOverview` / `GlBurnView` and re-run: all GPU state is derived.
 - Each tile deposits only what lands in its padded rect, blurs, and keeps its core. Tiled output is bit-identical to untiled on the GPU, and within 1e-5 of peak on the CPU (`sim.test.ts`, bench).
 - Render targets are pooled at the largest padded size and reused across tiles and runs. Full-res and coarse use separate pools, so scrubbing never evicts the full-res targets (COD-252: reallocating them stalled the driver).
 - **Bins.** With more than one tile, samples are counting-sorted into 512-cell buckets on an absolute mm lattice. Each bucket stays in time order, so a cutoff is still a prefix of every bucket. A tile draws only the buckets overlapping its padded rect (`bins.ts`).
@@ -97,7 +101,7 @@ New in the contract (additive):
 The normative rules are in `src/contract/live.ts`:
 
 - **Live grid.** `planJobGrid` over the burn bounds received so far. It is lattice-aligned, so existing cells never move as the grid grows.
-- **Live tiling.** `planLiveTiles`: tiles on a fixed absolute lattice (core `C = 9000 − 2·margin` cells), created lazily as the grid reaches them, and never moved. A refresh re-runs only `LiveJob.dirtyTiles`. After `job.loaded` the job switches to `planTiles`.
+- **Live tiling.** `planLiveTiles`: tiles on a fixed absolute lattice (core `C = S − 2·margin` cells, `S` the budgeted tile side: pass the setup through `GlSim.fit`), created lazily as the grid reaches them, and never moved while `S` holds. A refresh re-runs only `LiveJob.dirtyTiles`. After `job.loaded` the job switches to `planTiles`.
 - **Live scrub.** `headS = max(plannedS, end of last sample)`, and `cutoff = progress × headS`. Follow live pins the cutoff to `headS`.
 - **Job panel.** `LiveJob.stats()` returns `LiveJobStats`: bounds, grid, tile count, totals and missing batches.
 
