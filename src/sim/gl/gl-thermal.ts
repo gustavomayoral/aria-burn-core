@@ -35,7 +35,7 @@ import {
   type ThermalResult,
   type ThermalStep,
 } from '../thermal.ts'
-import { Program, deleteTexture, framebuffer, target, texture, type Target } from './gl-util.ts'
+import { GlContextLostError, Program, deleteTexture, framebuffer, target, texture, type Target } from './gl-util.ts'
 import { FULLSCREEN_VS } from './shaders.ts'
 import {
   PER_SAMPLE_WIDTH,
@@ -388,8 +388,11 @@ export class GlPeakTemperatureStep implements ThermalStep {
 
     // (eAbs, eDose) stay on the GPU until the CPU asks (hover readout, energy checks).
     let arrays: { eAbs: Float32Array; eDose: Float32Array } | null = null
+    // Not read back yet and the texture died with a lost context (BURN-39): reading now gives zeros.
+    const lost = () => !arrays && (gl.isContextLost() || !gl.isTexture(perSample.tex))
     const readBack = () => {
       if (arrays) return arrays
+      if (lost()) throw new GlContextLostError('WebGL context lost before the thermal result was read back')
       const rgRead = (() => {
         gl.bindFramebuffer(gl.FRAMEBUFFER, perSample.fbo)
         gl.readBuffer(gl.COLOR_ATTACHMENT0)
@@ -416,6 +419,9 @@ export class GlPeakTemperatureStep implements ThermalStep {
       },
       get eDose() {
         return readBack().eDose
+      },
+      get lost() {
+        return lost()
       },
       bulkK,
       plan,

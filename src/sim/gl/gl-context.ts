@@ -10,7 +10,9 @@
 // context loss itself teaches none, since on Iris Xe it isn't a size limit.
 // The GPU ledger is per context object, which survives the loss, so pass the
 // context and the watch clears it on loss; otherwise the dead objects' bytes
-// would shrink the tile budget after restore (BURN-39).
+// would shrink the tile budget after restore (BURN-39). The thermal cache
+// outlives the context too: a GPU thermal result not yet read back reports
+// `lost` and thermalFor recomputes it, instead of reading zeros (BURN-39).
 
 import { ledger } from './gl-util.ts'
 

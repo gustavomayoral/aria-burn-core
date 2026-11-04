@@ -46,6 +46,8 @@ export interface ThermalResult {
   ambientK: number
   /** flashKPerJPerMm2: dose → equivalent peak temperature rise. */
   flashK: number
+  /** True once the per-sample data is gone with a lost WebGL context (GPU step, BURN-39); thermalFor recomputes it. */
+  readonly lost?: boolean
 }
 
 export interface ThermalStep {
@@ -448,7 +450,7 @@ export function thermalFor(
   if (!peakTemperatureModel(material)) return null
   const key = [store.version, machine, material, kernel.sigmaUMm, kernel.sigmaVMm, kernel.angleDeg, step.id]
   const hit = resultCache.get(store)
-  if (hit && hit.key.length === key.length && hit.key.every((v, i) => v === key[i])) return hit.result
+  if (hit && !hit.result.lost && hit.key.length === key.length && hit.key.every((v, i) => v === key[i])) return hit.result
   const result = step.run(store, machine, material, kernel)
   resultCache.set(store, { key, result })
   return result

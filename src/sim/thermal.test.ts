@@ -337,4 +337,28 @@ describe('the thermal step is swappable (Option A fallback seam)', () => {
     const out = stitch(simulateCpu(store, setup))
     expect(out.dose!.some((d) => d > 0)).toBe(true)
   })
+
+  it('recomputes a cached result whose data was lost with its WebGL context (BURN-39)', () => {
+    // Like GlPeakTemperatureStep: per-sample data stays on the GPU, so a context loss before readback loses it.
+    let runs = 0
+    let contextLost = false
+    const gpuLike: ThermalStep = {
+      id: 'test-gpu-like',
+      run(store, m, material, kernel) {
+        runs++
+        const result = speedCorrection.run(store, m, material, kernel)
+        return Object.defineProperty(result, 'lost', { get: () => contextLost && runs === 1 })
+      },
+    }
+    const job = lineJob(1, 1, 7, 1, 3000, 400)
+    const store = storeFor(job)
+    const { thermalKernel } = setupJob(job.burnBounds!, machine, wood)
+    const first = thermalFor(store, machine, wood, thermalKernel, gpuLike)
+    expect(thermalFor(store, machine, wood, thermalKernel, gpuLike)).toBe(first)
+    contextLost = true
+    const second = thermalFor(store, machine, wood, thermalKernel, gpuLike)
+    expect(second).not.toBe(first)
+    expect(runs).toBe(2)
+    expect(thermalFor(store, machine, wood, thermalKernel, gpuLike)).toBe(second)
+  })
 })
