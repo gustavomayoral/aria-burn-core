@@ -10,7 +10,7 @@
 //
 // Rules (normative):
 //   - The job grid covers JobModel.burnBounds expanded by kernelRadiusMm on every
-//     side, snapped outward to whole cells at gridPitchMm.
+//     side, snapped outward to whole cells at the job pitch (jobPitchMm below).
 //   - The tile side S = min(TILE_MAX_CELLS, tileSideForBytes(budget left for the
 //     tile pool)), where the pool budget is defaultGpuBudgetBytes(renderer)
 //     (or an override) minus what else is resident on the GPU, and
@@ -97,6 +97,52 @@ export interface TilePlan {
   cols: number
   rows: number
   tiles: Tile[]
+}
+
+// Job pitch (BURN-37). gridPitchMm (σ_min ÷ 3) is the detail pitch. The
+// provisional diode's 5 µm makes a 100 mm job 401 M cells, which renders in
+// 8–15 s on Iris Xe. Rules (normative):
+//   - The job grid's pitch is k · detail pitch, with k the smallest integer ≥ 1
+//     whose planJobGrid is at most the job cell budget. An integer k keeps the
+//     job lattice inside the detail lattice: a job cell is exactly k × k detail
+//     cells, and lattice alignment (live.ts) holds at both pitches.
+//   - The detail view (runDetail) and the hover readout run at the detail
+//     pitch, on planJobGrid over the same bounds. Only the full-job overview and
+//     the scrub use the job pitch.
+//   - Live jobs size k from the machine's travel area, not the bounds so far,
+//     so the pitch never changes while the stream grows.
+//   - Without a GPU (CPU reference, tests) the budget is Infinity: k = 1.
+
+/**
+ * Job cell budget on an integrated Intel GPU. Provisional (BURN-37): Iris Xe /
+ * WebView2 ran the 36 M-cell spike job warm in ~1.4 s (max 2.7 s), so ~50 M
+ * keeps a full-res render near the 2 s target.
+ */
+export const JOB_CELL_BUDGET = 50_000_000
+
+/**
+ * Job cell budget on other GPUs. Provisional: an M1 renders 401 M cells (the
+ * 5 µm 100 mm job) in 1.3–1.8 s warm and 4–5 s cold, so 256 M halves the side
+ * for that job and leaves headroom.
+ */
+export const JOB_CELL_BUDGET_LARGE = 256_000_000
+
+/** Default job cell budget for a GPU by its renderer string, like defaultGpuBudgetBytes. */
+export function defaultJobCellBudget(renderer: string): number {
+  return /intel|iris|uhd graphics|hd graphics/i.test(renderer) ? JOB_CELL_BUDGET : JOB_CELL_BUDGET_LARGE
+}
+
+/** Smallest integer multiple of `detailPitchMm` whose job grid over `bounds` has at most `maxCells` cells. */
+export function jobPitchMm(bounds: BoundsMm, detailPitchMm: number, kernel: KernelSigma, maxCells: number): number {
+  const cells = (k: number) => {
+    const g = planJobGrid(bounds, k * detailPitchMm, kernel)
+    return g.width * g.height
+  }
+  if (!(maxCells < Infinity) || cells(1) <= maxCells) return detailPitchMm
+  let k = Math.max(2, Math.ceil(Math.sqrt(cells(1) / maxCells)))
+  while (k > 2 && cells(k - 1) <= maxCells) k--
+  while (cells(k) > maxCells) k++
+  return k * detailPitchMm
 }
 
 export function planJobGrid(burnBounds: BoundsMm, pitchMm: number, kernel: KernelSigma): GridSpec {

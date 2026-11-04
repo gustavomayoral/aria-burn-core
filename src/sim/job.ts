@@ -5,7 +5,9 @@
 import {
   coarseGrid,
   coarseKernel,
+  coarsePitchKernel,
   gridPitchMm,
+  jobPitchMm,
   kernelRadiusMm,
   kernelSigma,
   planJobGrid,
@@ -34,6 +36,14 @@ export interface SimSetup {
   separable: SeparableKernel
   grid: GridSpec
   plan: TilePlan
+  /** Burn bounds the grid was planned over. */
+  burnBounds: BoundsMm
+  /**
+   * Pitch of the detail view and hover readout (mm): the contract's gridPitchMm
+   * (or the override). `grid.pitchMm` is an integer multiple of it when the job
+   * cell budget coarsened the job grid (BURN-37), else equal.
+   */
+  detailPitchMm: number
   /** How `plan` was made, so a smaller tile budget can rebuild it the same way (BURN-36). */
   tiling: 'regular' | 'live'
 }
@@ -45,8 +55,14 @@ export interface SetupOptions {
    * Tests use small tiles to exercise seams.
    */
   maxTileCells?: number
-  /** Pitch override (mm). Default is the contract's gridPitchMm (minor spot sigma ÷ 3). */
+  /** Detail pitch override (mm). Default is the contract's gridPitchMm (minor spot sigma ÷ 3). */
   pitchMm?: number
+  /**
+   * Job cell budget (BURN-37): the job grid's pitch is the smallest integer
+   * multiple of the detail pitch that fits it. Default Infinity (job pitch =
+   * detail pitch, as on the CPU reference); on the GPU pass GlSim.cellBudget.
+   */
+  cellBudget?: number
   /** 'live' anchors tiles to the absolute lattice (contract live.ts) so they stay put while a stream grows. */
   tiling?: 'regular' | 'live'
   /** Thermal step override (e.g. an empirical speed correction in place of the peak-temperature grid). */
@@ -59,15 +75,64 @@ export function setupJob(
   material: MaterialProfile,
   options: SetupOptions = {},
 ): SimSetup {
-  const pitchMm = options.pitchMm ?? gridPitchMm(machine.spot)
+  const detailPitchMm = options.pitchMm ?? gridPitchMm(machine.spot)
   const kernel = kernelSigma(machine.spot, material.sigmaHeatMm)
+  const tiling = options.tiling ?? 'regular'
+  // Live jobs size the pitch from the travel area so it holds while the bounds grow (contract tiling.ts).
+  const pitchBounds = tiling === 'live' ? unionBounds(burnBounds, travelBounds(machine)) : burnBounds
+  const pitchMm = jobPitchMm(pitchBounds, detailPitchMm, kernel, options.cellBudget ?? Infinity)
   const grid = planJobGrid(burnBounds, pitchMm, kernel)
   const maxCells = options.maxTileCells ?? TILE_MAX_CELLS
-  const tiling = options.tiling ?? 'regular'
   const plan = tiling === 'live' ? planLiveTiles(grid, kernel, maxCells) : planTiles(grid, kernel, maxCells)
-  const setup: SimSetup = { machine, material, kernel, thermalKernel: kernel, separable: separableKernel(kernel, pitchMm), grid, plan, tiling }
+  const setup: SimSetup = {
+    machine,
+    material,
+    kernel,
+    thermalKernel: kernel,
+    // Margins use the full kernel; only the blur gives back the coarse deposit's spread (contract coarsePitchKernel).
+    separable: separableKernel(coarsePitchKernel(kernel, pitchMm, detailPitchMm), pitchMm),
+    grid,
+    plan,
+    burnBounds,
+    detailPitchMm,
+    tiling,
+  }
   if (options.thermalStep) setup.thermalStep = options.thermalStep
   return setup
+}
+
+const travelBounds = (m: MachineProfile): BoundsMm => ({ minXMm: 0, minYMm: 0, maxXMm: m.travelMm.x, maxYMm: m.travelMm.y })
+
+const unionBounds = (a: BoundsMm, b: BoundsMm): BoundsMm => ({
+  minXMm: Math.min(a.minXMm, b.minXMm),
+  minYMm: Math.min(a.minYMm, b.minYMm),
+  maxXMm: Math.max(a.maxXMm, b.maxXMm),
+  maxYMm: Math.max(a.maxYMm, b.maxYMm),
+})
+
+const detailSetups = new WeakMap<SimSetup, SimSetup>()
+
+/**
+ * The setup at the detail pitch (BURN-37): the same job, grid planned over the
+ * same bounds at `detailPitchMm`. It is what runDetail and the hover readout
+ * use; only region runs touch it, so its plan is never budgeted. The setup
+ * itself when the job grid was not coarsened.
+ */
+export function detailSetup(setup: SimSetup): SimSetup {
+  if (setup.grid.pitchMm === setup.detailPitchMm) return setup
+  let d = detailSetups.get(setup)
+  if (!d) {
+    const grid = planJobGrid(setup.burnBounds, setup.detailPitchMm, setup.kernel)
+    d = {
+      ...setup,
+      separable: separableKernel(setup.kernel, setup.detailPitchMm),
+      grid,
+      plan: planTiles(grid, setup.kernel, TILE_MAX_CELLS),
+      tiling: 'regular',
+    }
+    detailSetups.set(setup, d)
+  }
+  return d
 }
 
 /** The coarse scrub setup: same job area, coarse pitch, widened kernel, one tile. */

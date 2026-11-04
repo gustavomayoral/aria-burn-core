@@ -5,7 +5,9 @@
 //   - Fluence is J/mm² on a regular grid. Cell (i, j) covers
 //     [originX + i·pitch, originX + (i+1)·pitch) × [originY + j·pitch, …);
 //     its centre is the sample point for bilinear weights. Row-major, row 0 = min Y.
-//   - Grid pitch = minor spot sigma ÷ 3 (GRID_PITCH_PER_SIGMA).
+//   - Detail pitch = minor spot sigma ÷ 3 (GRID_PITCH_PER_SIGMA). The job grid
+//     uses an integer multiple of it under a cell budget (tiling.ts, BURN-37);
+//     a coarser job grid blurs with coarsePitchKernel.
 //   - Each sample deposits E = powerW · dtS · absorption (J), split bilinearly
 //     over the four nearest cell centres, adding w·E / pitch² to each.
 //   - Spot and heat spread are one linear blur after deposit:
@@ -44,6 +46,24 @@ export function kernelSigma(spot: Spot, sigmaHeatMm: number): KernelSigma {
     sigmaUMm: Math.sqrt(spot.sigmaXMm ** 2 + h2),
     sigmaVMm: Math.sqrt(spot.sigmaYMm ** 2 + h2),
     angleDeg: spot.angleDeg,
+  }
+}
+
+/**
+ * The blur kernel for a job grid coarser than the detail pitch (BURN-37). The
+ * bilinear deposit spreads each sample over a pitch-wide tent, adding pitch²/6
+ * of variance per axis, so a coarser grid blurs more. The job grid's kernel
+ * gives back the difference, (pitch² − detailPitch²)/6 per axis (isotropic, so
+ * it holds for rotated spots), and both grids show the same line width. At
+ * k = 1 the kernel is unchanged.
+ */
+export function coarsePitchKernel(kernel: KernelSigma, pitchMm: number, detailPitchMm: number): KernelSigma {
+  const d = (pitchMm * pitchMm - detailPitchMm * detailPitchMm) / 6
+  if (d <= 0) return kernel
+  return {
+    ...kernel,
+    sigmaUMm: Math.sqrt(Math.max(kernel.sigmaUMm ** 2 - d, 0)),
+    sigmaVMm: Math.sqrt(Math.max(kernel.sigmaVMm ** 2 - d, 0)),
   }
 }
 

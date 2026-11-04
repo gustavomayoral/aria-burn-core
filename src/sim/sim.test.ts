@@ -16,6 +16,11 @@ import {
   TILE_MIN_CELLS,
   Verdict,
   defaultGpuBudgetBytes,
+  defaultJobCellBudget,
+  coarsePitchKernel,
+  jobPitchMm,
+  JOB_CELL_BUDGET,
+  JOB_CELL_BUDGET_LARGE,
   buildContractSchema,
   classifyFluence,
   classifyThermal,
@@ -41,6 +46,7 @@ import {
   blurCpu,
   cellDepthMm,
   cellLab,
+  detailSetup,
   depositCpu,
   interimSampler,
   kernel1D,
@@ -350,6 +356,118 @@ describe('tiling', () => {
     const big = setupJob({ minXMm: 0, minYMm: 0, maxXMm: 100, maxYMm: 100 }, machine, wood)
     expect(big.plan.tiles.length).toBeGreaterThan(1)
     for (const t of big.plan.tiles) expect(Math.max(t.padded.width, t.padded.height)).toBeLessThanOrEqual(TILE_MAX_CELLS)
+  })
+})
+
+describe('job pitch under a cell budget (BURN-37)', () => {
+  const bed100 = { minXMm: 0, minYMm: 0, maxXMm: 100, maxYMm: 100 }
+  const detail = gridPitchMm(machine.spot)
+  const cells = (g: { width: number; height: number }) => g.width * g.height
+
+  it('picks the smallest integer multiple of the detail pitch that fits the budget', () => {
+    const kernel = setupJob(bed100, machine, wood).kernel
+    expect(jobPitchMm(bed100, detail, kernel, Infinity)).toBe(detail)
+    const pitch = jobPitchMm(bed100, detail, kernel, JOB_CELL_BUDGET)
+    const k = Math.round(pitch / detail)
+    expect(pitch).toBeCloseTo(k * detail, 12)
+    expect(k).toBe(3) // 5 µm → 15 µm: 401 M → ~45 M cells
+    expect(cells(planJobGrid(bed100, pitch, kernel))).toBeLessThanOrEqual(JOB_CELL_BUDGET)
+    expect(cells(planJobGrid(bed100, (k - 1) * detail, kernel))).toBeGreaterThan(JOB_CELL_BUDGET)
+    // A small job is never coarsened.
+    expect(jobPitchMm({ minXMm: 0, minYMm: 0, maxXMm: 10, maxYMm: 10 }, detail, kernel, JOB_CELL_BUDGET)).toBe(detail)
+  })
+
+  it('budgets integrated Intel GPUs tighter than others', () => {
+    expect(defaultJobCellBudget('ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)')).toBe(JOB_CELL_BUDGET)
+    expect(defaultJobCellBudget('ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)')).toBe(JOB_CELL_BUDGET_LARGE)
+  })
+
+  it('the detail setup runs the same job at the detail pitch, on a lattice the job grid nests in', () => {
+    const coarse = setupJob(bed100, machine, wood, { cellBudget: JOB_CELL_BUDGET })
+    expect(coarse.detailPitchMm).toBe(detail)
+    expect(coarse.grid.pitchMm).toBeCloseTo(3 * detail, 12)
+    const d = detailSetup(coarse)
+    expect(d.grid.pitchMm).toBe(detail)
+    expect(d.separable.x.sigmaCells).toBeCloseTo(setupJob(bed100, machine, wood).separable.x.sigmaCells, 9)
+    expect(detailSetup(coarse)).toBe(d)
+    // Job cell (i, j) is exactly detail cells [3i, 3i + 3) × [3j, 3j + 3), offset by whole cells.
+    const ox = (coarse.grid.originXMm - d.grid.originXMm) / detail
+    const oy = (coarse.grid.originYMm - d.grid.originYMm) / detail
+    expect(Math.abs(ox - Math.round(ox))).toBeLessThan(1e-6)
+    expect(Math.abs(oy - Math.round(oy))).toBeLessThan(1e-6)
+    expect(Math.round(ox)).toBeLessThanOrEqual(0)
+    expect(Math.round(ox) + 3 * coarse.grid.width).toBeGreaterThanOrEqual(d.grid.width)
+    // Without a budget nothing changes, the detail setup is the setup.
+    const plain = setupJob(bed100, machine, wood)
+    expect(plain.grid.pitchMm).toBe(detail)
+    expect(detailSetup(plain)).toBe(plain)
+  })
+
+  it('the coarse kernel gives back the deposit spread, and is unchanged at k = 1', () => {
+    const k = setupJob(bed100, machine, wood).kernel
+    expect(coarsePitchKernel(k, detail, detail)).toBe(k)
+    const c = coarsePitchKernel(k, 3 * detail, detail)
+    const give = ((3 * detail) ** 2 - detail ** 2) / 6
+    expect(c.sigmaUMm ** 2).toBeCloseTo(k.sigmaUMm ** 2 - give, 12)
+    expect(c.sigmaVMm ** 2).toBeCloseTo(k.sigmaVMm ** 2 - give, 12)
+    expect(c.angleDeg).toBe(k.angleDeg)
+  })
+
+  it('live jobs size the pitch from the travel area, so it holds while the bounds grow', () => {
+    const small = setupJob({ minXMm: 10, minYMm: 10, maxXMm: 12, maxYMm: 11 }, machine, wood, { cellBudget: JOB_CELL_BUDGET, tiling: 'live' })
+    const big = setupJob({ minXMm: 5, minYMm: 10, maxXMm: 300, maxYMm: 250 }, machine, wood, { cellBudget: JOB_CELL_BUDGET, tiling: 'live' })
+    expect(small.grid.pitchMm).toBe(big.grid.pitchMm)
+    expect(small.grid.pitchMm).toBeGreaterThan(detail)
+    // A regular (loaded) job of the same small size is not coarsened.
+    expect(setupJob({ minXMm: 10, minYMm: 10, maxXMm: 12, maxYMm: 11 }, machine, wood, { cellBudget: JOB_CELL_BUDGET }).grid.pitchMm).toBe(detail)
+  })
+
+  it('at 3 × the detail pitch the job grid conserves energy and matches the detail run box-averaged', () => {
+    const job = concatJobs(
+      rasterJob({ x0Mm: 1, y0Mm: 1, widthMm: 2, heightMm: 1, intervalMm: 0.08, feedMmPerMin: 3000, s: 600 }),
+      squareJob(3.5, 1, 1, 600, 800),
+    )
+    const { store } = storeFor(job)
+    const fine = setupJob(job.burnBounds!, machine, woodFluence)
+    const budget = Math.ceil(cells(fine.grid) / 6)
+    const coarse = setupJob(job.burnBounds!, machine, woodFluence, { cellBudget: budget })
+    expect(coarse.grid.pitchMm / detail).toBeCloseTo(3, 9)
+    const run = simulateCpu(store, coarse)
+    for (const v of [run.energy.depositJ, run.energy.blurHJ, run.energy.blurVJ]) expect(rel(v, run.energy.expectedJ)).toBeLessThan(CONSERVATION_TOLERANCE)
+    const a = stitch(simulateCpu(store, fine))
+    const b = stitch(run)
+    const ox = Math.round((coarse.grid.originXMm - fine.grid.originXMm) / detail)
+    const oy = Math.round((coarse.grid.originYMm - fine.grid.originYMm) / detail)
+    let peak = 0
+    for (const v of a.fluence.data) peak = Math.max(peak, v)
+    let worst = 0
+    let mismatch = 0
+    let marked = 0
+    for (let y = 0; y < coarse.grid.height; y++) {
+      for (let x = 0; x < coarse.grid.width; x++) {
+        let box = 0
+        let n = 0
+        for (let j = 0; j < 3; j++)
+          for (let i = 0; i < 3; i++) {
+            const fx = ox + 3 * x + i
+            const fy = oy + 3 * y + j
+            if (fx < 0 || fy < 0 || fx >= fine.grid.width || fy >= fine.grid.height) continue
+            box += a.fluence.data[fy * fine.grid.width + fx]!
+            n++
+          }
+        if (!n) continue
+        worst = Math.max(worst, Math.abs(b.fluence.data[y * coarse.grid.width + x]! - box / n) / peak)
+        const fc = (oy + 3 * y + 1) * fine.grid.width + ox + 3 * x + 1
+        const cv = b.verdict[y * coarse.grid.width + x]!
+        const fv = a.verdict[fc]
+        if (fv === undefined || (cv === Verdict.Untouched && fv === Verdict.Untouched)) continue
+        marked++
+        if (cv !== fv) mismatch++
+      }
+    }
+    // Measured (docs/bench/burn-37-accuracy-cpu.txt): p99 ≈ 1 % of peak, ~1–1.5 % of marked cells differ (edge cells).
+    expect(worst).toBeLessThan(0.05)
+    expect(mismatch / marked).toBeLessThan(0.03)
   })
 })
 

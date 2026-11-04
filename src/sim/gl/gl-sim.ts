@@ -13,7 +13,7 @@
 // and the response reads the bulk-temperature map for fire risk.
 
 import type { CellRect, GridSpec, Tile, TilePlan } from '../../contract/index.ts'
-import { TILE_MAX_CELLS, defaultGpuBudgetBytes, UNTOUCHED_FRACTION, tilePoolBytes, verdictThresholds } from '../../contract/index.ts'
+import { TILE_MAX_CELLS, defaultGpuBudgetBytes, defaultJobCellBudget, UNTOUCHED_FRACTION, tilePoolBytes, verdictThresholds } from '../../contract/index.ts'
 import { depositCpu, type StageEnergy } from '../cpu.ts'
 import { coarseSetup, type SimSetup } from '../job.ts'
 import type { Kernel1D, SkewTaps } from '../kernel.ts'
@@ -367,6 +367,8 @@ export class GlSim {
   private active: NonNullable<GlSim['thermalState']> | null = null
   /** Budget for everything a run keeps on the GPU (BURN-36). */
   readonly gpuBudgetBytes: number
+  /** Job cell budget for setupJob's `cellBudget` (BURN-37): contract defaultJobCellBudget(renderer) unless overridden. */
+  readonly cellBudget: number
   /** Largest tile side known to allocate on this GPU (shrinks after a failure). */
   maxTileSide: number
   private readonly failPoolAboveBytes: number
@@ -374,12 +376,13 @@ export class GlSim {
   /**
    * `forceCpuDeposit` exercises the no-EXT_float_blend fallback on hardware that has it.
    * `gpuBudgetBytes` overrides the contract's defaultGpuBudgetBytes(renderer); `maxTileSide` caps the tile side.
+   * `cellBudget` overrides the contract's defaultJobCellBudget(renderer).
    * `failPoolAboveBytes` makes any tile pool larger than this fail as if the GPU refused it
    * (tests and bench exercise the smaller-tile fallback with it).
    */
   constructor(
     readonly gl: WebGL2RenderingContext,
-    options: { forceCpuDeposit?: boolean; gpuBudgetBytes?: number; maxTileSide?: number; failPoolAboveBytes?: number } = {},
+    options: { forceCpuDeposit?: boolean; gpuBudgetBytes?: number; cellBudget?: number; maxTileSide?: number; failPoolAboveBytes?: number } = {},
   ) {
     assertContext(gl)
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('WebGL2: EXT_color_buffer_float is required')
@@ -394,6 +397,7 @@ export class GlSim {
       timerQuery: !!gl.getExtension('EXT_disjoint_timer_query_webgl2'),
     }
     this.gpuBudgetBytes = options.gpuBudgetBytes ?? defaultGpuBudgetBytes(this.caps.renderer)
+    this.cellBudget = options.cellBudget ?? defaultJobCellBudget(this.caps.renderer)
     this.maxTileSide = Math.min(options.maxTileSide ?? TILE_MAX_CELLS, learnedTileSides.get(this.caps.renderer) ?? TILE_MAX_CELLS)
     this.failPoolAboveBytes = options.failPoolAboveBytes ?? Infinity
     this.deposit = new Program(gl, DEPOSIT_VS, DEPOSIT_FS)
@@ -651,7 +655,8 @@ export class GlSim {
    */
   ensureBins(store: SampleStore, setup: SimSetup): SampleBins {
     const gl = this.gl
-    const bucketMm = BIN_CELLS * setup.grid.pitchMm
+    // Detail pitch, not the job grid's: full and detail runs (BURN-37) share one set of bins.
+    const bucketMm = BIN_CELLS * setup.detailPitchMm
     if (!this.bins || this.binStore !== store || this.bins.version !== store.version || this.bins.bucketMm !== bucketMm) {
       this.bins = new SampleBins(store, bucketMm)
       this.binStore = store

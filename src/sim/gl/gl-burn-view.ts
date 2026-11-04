@@ -25,7 +25,7 @@ import {
   type BurnViewOptions,
   type BurnViewParams,
 } from '../burn-view.ts'
-import type { SimSetup } from '../job.ts'
+import { detailSetup, type SimSetup } from '../job.ts'
 import type { SampleStore } from '../sample-store.ts'
 import { BURN_VIEW_FS, DETAIL_PACK_FS, VERDICT_SUMMARY_FS } from './burn-view-shaders.ts'
 import { GlOverview, mipTexture, type GlRunResult, type GlSim } from './gl-sim.ts'
@@ -165,14 +165,16 @@ export class GlBurnView {
   }
 
   /**
-   * Runs `rect` of the job grid at full resolution and keeps it as the detail
-   * layer. Cost is the samples in bins near the rect plus a rect-sized blur.
+   * Runs `rect` of the detail grid (detailSetup(setup).grid, at the detail
+   * pitch: see detailGrid / visibleCells) and keeps it as the detail layer.
+   * Cost is the samples in bins near the rect plus a rect-sized blur.
    */
   runDetail(store: SampleStore, setup: SimSetup, rect: CellRect, cutoffS: number): GlRunResult {
     const gl = this.gl
-    const { grid } = setup
+    const detail = detailSetup(setup)
+    const { grid } = detail
     let layer: BurnLayer | null = null
-    const result = this.sim.run(store, setup, {
+    const result = this.sim.run(store, detail, {
       timeCutoffS: cutoffS,
       region: rect,
       onTile: (t) => {
@@ -435,7 +437,10 @@ export class GlBurnView {
   }
 }
 
-/** Job-grid cells a view shows (clamped to the grid), for the detail run. */
+/** Grid a detail run's rect is in: the job at the detail pitch (BURN-37). */
+export const detailGrid = (setup: SimSetup): GridSpec => detailSetup(setup).grid
+
+/** Cells of `grid` a view shows (clamped to the grid). Pass detailGrid(setup) for runDetail. */
 export function visibleCells(grid: GridSpec, view: BurnViewport, canvasW: number, canvasH: number): CellRect | null {
   const halfW = (canvasW * view.mmPerPx) / 2
   const halfH = (canvasH * view.mmPerPx) / 2
