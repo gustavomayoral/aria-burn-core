@@ -17,6 +17,24 @@ const [command, arg] = process.argv.slice(2)
 
 const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: 'inherit' })
 const read = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+// On Windows the package managers are .cmd shims (pnpm.cmd, npm.cmd, yarn.cmd). execFile
+// can't start those without a shell (ENOENT, or EINVAL since Node's CVE-2024-27980 fix), so
+// there they run through cmd.exe. cmd.exe gets the arguments joined unquoted; every one passed
+// here is a fixed flag or a package.json script name, and anything else is refused.
+const isWindows = process.platform === 'win32'
+const runPm = (pm, args, cwd) => {
+  const unsafe = isWindows ? args.find((a) => !/^[\w@:.=+-]+$/.test(a)) : undefined
+  if (unsafe !== undefined) {
+    process.stderr.write(`wt: refusing to pass ${JSON.stringify(unsafe)} to ${pm} through cmd.exe\n`)
+    throw new Error('unsafe argument')
+  }
+  execFileSync(pm, args, { cwd, stdio: 'inherit', shell: isWindows })
+}
+// git prints C:/x/y on Windows while path.join gives C:\x\y: compare resolved paths.
+const isWorktree = (dir) =>
+  read(['worktree', 'list', '--porcelain'])
+    .split('\n')
+    .some((line) => line.startsWith('worktree ') && resolve(line.slice('worktree '.length)) === resolve(dir))
 const fail = (message) => {
   process.stderr.write(`wt: ${message}\n`)
   process.exit(1)
@@ -93,7 +111,7 @@ const runCheck = (cwd) => {
     return
   }
   for (const args of plan.runs) {
-    step(`${plan.pm} run ${args[0]}`, () => run(plan.pm, ['run', ...args], cwd), 'Fix the failures, commit, then run this command again.')
+    step(`${plan.pm} run ${args[0]}`, () => runPm(plan.pm, ['run', ...args], cwd), 'Fix the failures, commit, then run this command again.')
   }
 }
 // The branch was just rebased onto main, whose tip passed a check, so re-running
@@ -137,7 +155,7 @@ function start() {
   const name = branchName('node worktree.mjs start <COD-42 | short-topic>')
   const dir = join(dirname(mainRoot), `${basename(mainRoot)}-${name}`)
 
-  if (read(['worktree', 'list', '--porcelain']).split('\n').includes(`worktree ${dir}`)) {
+  if (isWorktree(dir)) {
     console.log(`wt: ${name} already has a worktree:\n${dir}`)
     return
   }
@@ -154,7 +172,7 @@ function start() {
   const pm = detectPm(mainRoot)
   if (pm) {
     const [cmd, args] = installCommand(pm)
-    step('install dependencies', () => run(cmd, args, dir), `Run it by hand in ${dir}.`)
+    step('install dependencies', () => runPm(cmd, args, dir), `Run it by hand in ${dir}.`)
   }
 
   // Gitignored local files a fresh checkout lacks. Extend this list per project if needed.
