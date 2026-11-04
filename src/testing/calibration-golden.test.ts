@@ -10,39 +10,28 @@
 // run at the job cell budget's coarse pitch, and the sampler steps at that
 // pitch too (its σ ÷ 3 step only matters at detail resolution). The app
 // previews the same G-code through the Rust parser and GRBL planner.
+//
+// The birch grid runs in a worker thread (calibration-preview.worker.ts): its
+// thermal step is over a minute of synchronous CPU, longer than vitest's worker
+// waits for an RPC reply before reporting an unhandled error.
 
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { Worker } from 'node:worker_threads'
 import { describe, expect, it } from 'vitest'
 import { PATTERN_KINDS, generatePattern, type PatternKind } from '../calibration/index.ts'
-import { decodeSampleBatch, type MachineProfile } from '../contract/index.ts'
-import { SampleStore, interimSampler, loadMachineProfile, loadMaterialProfile, setupJob, simulateCpu, stitch } from '../sim/index.ts'
-import { compareRgbaGolden } from './golden.ts'
+import { loadMaterialProfile } from '../sim/index.ts'
+import { machine, previewImage, provisional } from './calibration-preview.ts'
+import { compareRgbaGolden, type RgbaImage } from './golden.ts'
 
-const provisional = (name: string) => readFileSync(fileURLToPath(new URL(`../profiles/provisional/${name}`, import.meta.url)), 'utf8')
-const machine = loadMachineProfile(provisional('machine-10w-diode.json'))
-/** Fine enough that 0.06 mm label and corner strokes show at about their real tone. */
-const CELL_BUDGET = 2_000_000
-
-function flipRows(data: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
-  const out = new Uint8ClampedArray(data.length)
-  const row = width * 4
-  for (let y = 0; y < height; y++) out.set(data.subarray((height - 1 - y) * row, (height - y) * row), y * row)
-  return out
-}
-
-export function previewPattern(kind: PatternKind, materialFile: string, pattern: Record<string, unknown> = {}) {
-  const material = loadMaterialProfile(provisional(materialFile))
-  const p = generatePattern(kind, machine, material, { pattern })
-  const setup = setupJob(p.job.burnBounds!, machine, material, { cellBudget: CELL_BUDGET })
-  // Sample at the job pitch: a spot whose σ ÷ 3 is the coarse pitch, for the sampler only.
-  const s = (setup.grid.pitchMm * 3) / 1
-  const samplerMachine: MachineProfile = { ...machine, spot: { ...machine.spot, sigmaXMm: s, sigmaYMm: s } }
-  const plan = interimSampler.plan(p.job, samplerMachine, 1)
-  const store = new SampleStore(1)
-  for (const b of plan.batches) store.append(decodeSampleBatch(b))
-  const out = stitch(simulateCpu(store, setup))
-  return { pattern: p, setup, out }
+function previewInWorker(kind: PatternKind, materialFile: string, pattern: Record<string, unknown>): Promise<RgbaImage> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./calibration-preview.worker.ts', import.meta.url), {
+      workerData: { kind, materialFile, pattern },
+      execArgv: ['--import', 'tsx'],
+    })
+    worker.once('message', resolve)
+    worker.once('error', reject)
+    worker.once('exit', (code) => reject(new Error(`preview worker exited with ${code} before posting an image`)))
+  })
 }
 
 const SMALL_GRID = { powersPct: [20, 60, 100], cellMm: 3 }
@@ -51,13 +40,13 @@ describe.each([
   ...PATTERN_KINDS.map((k) => [k, 'black-anodized-aluminum.json', `pattern-${k}`, {}] as const),
   ['grid', 'birch-ply.json', 'pattern-grid-small-birch', SMALL_GRID] as const,
 ])('%s on %s', (kind, file, name, options) => {
-  it('previews like the golden', () => {
+  it('previews like the golden', async () => {
     const material = loadMaterialProfile(provisional(file))
     const feeds = generatePattern('grid', machine, material).options.feedsMmPerMin as number[]
-    const pattern = options === SMALL_GRID ? { ...SMALL_GRID, feedsMmPerMin: [feeds[0]!, feeds[2]!, feeds[5]!] } : options
-    const { setup, out } = previewPattern(kind, file, pattern)
-    const { width, height } = setup.grid
-    const r = compareRgbaGolden(name, { width, height, data: flipRows(out.color, width, height) })
+    const small = options === SMALL_GRID
+    const pattern = small ? { ...SMALL_GRID, feedsMmPerMin: [feeds[0]!, feeds[2]!, feeds[5]!] } : options
+    const image = small ? await previewInWorker(kind, file, pattern) : previewImage(kind, file, pattern)
+    const r = compareRgbaGolden(name, image)
     expect(r.pass, r.message).toBe(true)
-  }, 180_000) // the small birch grid takes ~77 s alone on Iris Xe laptops
+  }, 180_000) // the small birch grid takes ~77 s alone and ~93 s in the full suite on Iris Xe laptops
 })
