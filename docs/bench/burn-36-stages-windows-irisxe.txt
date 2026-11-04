@@ -1,0 +1,83 @@
+BURN-36 upload-stages bench (?auto=stages) on Windows / Intel Iris Xe, run 2026-11-03, branch burn-36 at 4ef8d90.
+Windows 11 Home 10.0.26300 · Edge 156.0.4314.58 · WebView2 Runtime 156.0.4314.58
+GPU Intel Iris Xe Graphics (0x9A49), ANGLE / Direct3D 11. Reports copied from the `pnpm bench` log.
+Each run was alone, in a fresh process: WebView2 by restarting aria-burn (debug build at 9ee8c33,
+ARIA_BURN_BENCH_URL pointed at this repo's bench page), Edge with a new --user-data-dir.
+
+Summary
+- No step lost the context in either WebView2 or Edge, in both the fluence-only and thermal passes
+  (gl error 0 throughout). The 993² 0x8cdd / context loss from the earlier WebView2 ?auto=tiles run
+  (burn-36-tiles-windows-irisxe.txt, run 2) did not reproduce this way.
+- Slow steps (> 1.8 s wall): thermal step 7.2 s (WebView2) / 13.2 s (Edge); bins upload 1.1 s / 4.4 s;
+  full 441-tile run 9.8–14.4 s. None of these lost the context.
+- Event Viewer, System log: no event 4101 and no Display-source events in the 7 days before this run.
+  That covers the earlier WebView2 loss (~16:45 today) and the BURN-33 losses, so those were not
+  Windows TDR resets.
+- Edge was slower than WebView2 throughout this pair (CPU sampler 11.8 s vs 6.9 s), so the
+  Edge/WebView2 difference here is likely machine load, not the browser.
+
+=== 1. WebView2, ?auto=stages, fresh app process ===
+[auto=stages]
+== Upload stages (BURN-36): 5 µm 100 mm job, one GPU step at a time ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 0 · budget 768 MiB
+Each line: wall time incl. CPU work, finish + 1-pixel readback · resident after · gl error · context lost
+SLOW marks steps over 1.8 s of wall time; Windows resets the GPU when one GPU command runs past ~2 s (TDR),
+so a slow step that then loses the context is the suspect. Check Event Viewer for display event 4101.
+samples 19,688,836 (225 MiB xye) · CPU sampler 6865.4 ms · store 1005.7 ms
+
+-- fluence only (no thermal step) --
+  1. upload samples (skipped if on GPU)   189.6 ms · resident   225 MiB · gl error 0 · lost false
+  2. thermal step                        0.3 ms · resident   225 MiB · gl error 0 · lost false
+  3. upload bins (bufferData)         1076.1 ms · resident   526 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     4.1 ms · resident   968 MiB · gl error 0 · lost false
+  5. tile pool 1024²                     8.6 ms · resident   985 MiB · gl error 0 · lost false
+  6. one 1024² region run              142.8 ms · resident   985 MiB · gl error 0 · lost false
+  7. full run, 441 tiles ≤ 995        9794.5 ms · resident   985 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+-- birch with the thermal step --
+  1. upload samples (skipped if on GPU)     0.1 ms · resident   225 MiB · gl error 0 · lost false
+  2. thermal step                     7226.3 ms · resident   381 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  3. upload bins (bufferData)          957.5 ms · resident   682 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     1.6 ms · resident  1124 MiB · gl error 0 · lost false
+  5. tile pool 1024²                    13.8 ms · resident  1141 MiB · gl error 0 · lost false
+  6. one 1024² region run              102.9 ms · resident  1141 MiB · gl error 0 · lost false
+  7. full run, 441 tiles ≤ 995       13449.0 ms · resident  1141 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+fluence only (no thermal step): all steps ok
+birch with the thermal step: all steps ok
+gl error: 0
+
+=== 2. Edge, ?auto=stages, fresh process ===
+[auto=stages]
+== Upload stages (BURN-36): 5 µm 100 mm job, one GPU step at a time ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 0 · budget 768 MiB
+Each line: wall time incl. CPU work, finish + 1-pixel readback · resident after · gl error · context lost
+SLOW marks steps over 1.8 s of wall time; Windows resets the GPU when one GPU command runs past ~2 s (TDR),
+so a slow step that then loses the context is the suspect. Check Event Viewer for display event 4101.
+samples 19,688,836 (225 MiB xye) · CPU sampler 11839.6 ms · store 5173.7 ms
+
+-- fluence only (no thermal step) --
+  1. upload samples (skipped if on GPU)   807.9 ms · resident   225 MiB · gl error 0 · lost false
+  2. thermal step                        9.0 ms · resident   225 MiB · gl error 0 · lost false
+  3. upload bins (bufferData)         4421.6 ms · resident   526 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  4. overview 4096² (burn view size)    20.4 ms · resident   968 MiB · gl error 0 · lost false
+  5. tile pool 1024²                    26.7 ms · resident   985 MiB · gl error 0 · lost false
+  6. one 1024² region run              709.8 ms · resident   985 MiB · gl error 0 · lost false
+  7. full run, 441 tiles ≤ 995       14362.9 ms · resident   985 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+-- birch with the thermal step --
+  1. upload samples (skipped if on GPU)     0.1 ms · resident   225 MiB · gl error 0 · lost false
+  2. thermal step                    13179.6 ms · resident   381 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  3. upload bins (bufferData)         1835.7 ms · resident   682 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  4. overview 4096² (burn view size)     9.4 ms · resident  1124 MiB · gl error 0 · lost false
+  5. tile pool 1024²                    26.6 ms · resident  1141 MiB · gl error 0 · lost false
+  6. one 1024² region run              223.4 ms · resident  1141 MiB · gl error 0 · lost false
+  7. full run, 441 tiles ≤ 995        9839.8 ms · resident  1141 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+fluence only (no thermal step): all steps ok
+birch with the thermal step: all steps ok
+gl error: 0
