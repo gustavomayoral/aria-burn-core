@@ -9,7 +9,7 @@
 // Generalized from aria-studio's scripts/worktree.mjs: detects the package manager and check
 // command instead of assuming pnpm + a `check` script, and tolerates a repo with no `origin` yet.
 import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, readFileSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { headMatchesStamp, writeStamp, headSha } from './checkStamp.mjs'
 
@@ -215,9 +215,17 @@ function finish() {
       ? `main is merged locally; push it by hand, then \`git push origin --delete ${branch}\` if origin still has it.`
       : 'main is merged locally; push it by hand.',
   )
+  // pnpm links packages with junctions on Windows, which `git worktree remove` can't delete
+  // ("Directory not empty"). rmSync unlinks them without following, so clear node_modules first.
+  const removeWorktree = () => {
+    const ignoredDirs = read(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'], root)
+    for (const dir of ignoredDirs.split('\n').filter((d) => /(^|\/)node_modules\/$/.test(d)))
+      rmSync(join(root, dir), { recursive: true, force: true })
+    run('git', ['worktree', 'remove', root], mainRoot)
+  }
   step(
     'remove the worktree',
-    () => run('git', ['worktree', 'remove', root], mainRoot),
+    removeWorktree,
     `main is merged${hasOrigin ? ' and pushed' : ''}; remove ${root} by hand.`,
   )
   step(`delete branch ${branch}`, () => run('git', ['branch', '-d', branch], mainRoot), 'Delete it by hand.')
