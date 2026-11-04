@@ -1,0 +1,45 @@
+{
+  "contractVersion": 1,
+  "id": "creality-falcon2",
+  "brand": "Creality",
+  "name": "Creality Falcon2",
+  "firmware": "grbl",
+  "workAreaMm": {
+    "x": 400,
+    "y": 415
+  },
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": {
+    "x": 25000,
+    "y": 25000
+  },
+  "accelMmPerS2": {
+    "x": 1000,
+    "y": 1000
+  },
+  "travelMm": {
+    "x": 400,
+    "y": 415
+  },
+  "modules": [
+    "creality-falcon2-22w",
+    "creality-falcon2-12w",
+    "creality-falcon2-40w"
+  ],
+  "fieldStatus": {
+    "workAreaMm": "sourced",
+    "sMax": "sourced",
+    "laserMode": "sourced",
+    "junctionDeviationMm": "sourced",
+    "maxRateMmPerMin": "provisional",
+    "accelMmPerS2": "provisional",
+    "travelMm": "sourced"
+  },
+  "provenance": {
+    "source": "provisional",
+    "label": "provisional where marked — see fieldStatus",
+    "notes": "Frame values marked sourced come from manufacturer specs or published $$ dumps; the rest are assumed common GRBL defaults. Sources: src/profiles/catalog/SOURCES.md#creality-falcon2"
+  }
+}

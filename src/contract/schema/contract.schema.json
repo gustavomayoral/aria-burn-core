@@ -354,6 +354,14 @@
         }
       ]
     },
+    "FieldStatus": {
+      "description": "sourced = manufacturer spec or published `$$` dump; provisional = vendor marketing figure or an assumed common default, to be replaced by measurement (BURN-12).",
+      "type": "string",
+      "enum": [
+        "sourced",
+        "provisional"
+      ]
+    },
     "FireRisk": {
       "description": "Fire-risk verdict threshold. `temperature` (COD-258) compares the bulk temperature, not the sub-millisecond flash of a pass.",
       "oneOf": [
@@ -668,8 +676,292 @@
         "m4"
       ]
     },
+    "LaserModule": {
+      "description": "Laser module: the diode head that mounts on a frame (BURN-30).",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "id",
+        "brand",
+        "name",
+        "opticalPowerW",
+        "wavelengthNm",
+        "spot",
+        "powerCurve",
+        "fieldStatus",
+        "provenance"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Stable catalog id, e.g. \"sculpfun-s30-pro-10w\"",
+          "type": "string"
+        },
+        "brand": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "description": "Display name, e.g. \"S30 Pro 10 W\"",
+          "type": "string"
+        },
+        "opticalPowerW": {
+          "description": "Optical output at full power (W). Not electrical input power.",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "wavelengthNm": {
+          "description": "Emission wavelength (nm)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "spot": {
+          "$ref": "#/$defs/ModuleSpot"
+        },
+        "powerCurve": {
+          "minItems": 2,
+          "description": "S → optical power lookup, as MachineProfile.powerCurve.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PowerCurvePoint"
+          }
+        },
+        "fieldStatus": {
+          "additionalProperties": false,
+          "description": "Where each module value came from.",
+          "type": "object",
+          "required": [
+            "opticalPowerW",
+            "wavelengthNm",
+            "spot",
+            "powerCurve"
+          ],
+          "properties": {
+            "opticalPowerW": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "wavelengthNm": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "spot": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "powerCurve": {
+              "$ref": "#/$defs/FieldStatus"
+            }
+          }
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        }
+      }
+    },
+    "MachineFrame": {
+      "description": "Machine frame: motion system and emulated GRBL `$` settings (BURN-30).",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "id",
+        "brand",
+        "name",
+        "firmware",
+        "workAreaMm",
+        "sMax",
+        "laserMode",
+        "junctionDeviationMm",
+        "maxRateMmPerMin",
+        "accelMmPerS2",
+        "travelMm",
+        "modules",
+        "fieldStatus",
+        "provenance"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Stable catalog id, e.g. \"sculpfun-s30\"",
+          "type": "string"
+        },
+        "brand": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "description": "Display name, e.g. \"Sculpfun S30 / S30 Pro\"",
+          "type": "string"
+        },
+        "firmware": {
+          "description": "Only GRBL machines are catalogued; the emulator speaks GRBL only.",
+          "const": "grbl",
+          "type": "string"
+        },
+        "workAreaMm": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "description": "Vendor-stated engraving area (bed size), X axis (mm)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "y": {
+              "description": "Vendor-stated engraving area (bed size), Y axis (mm)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        "sMax": {
+          "description": "$30 maximum S value",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "laserMode": {
+          "description": "$32 laser mode",
+          "type": "boolean"
+        },
+        "junctionDeviationMm": {
+          "description": "$11 junction deviation (mm)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "maxRateMmPerMin": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "description": "$110/$111 max rate, X axis (mm/min)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "y": {
+              "description": "$110/$111 max rate, Y axis (mm/min)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        "accelMmPerS2": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "description": "$120/$121 acceleration, X axis (mm/s²)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "y": {
+              "description": "$120/$121 acceleration, Y axis (mm/s²)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        "travelMm": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "x",
+            "y"
+          ],
+          "properties": {
+            "x": {
+              "description": "$130/$131 max travel, X axis (mm)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "y": {
+              "description": "$130/$131 max travel, Y axis (mm)",
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          }
+        },
+        "modules": {
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Laser modules this frame takes, stock module first.",
+          "type": "array",
+          "items": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "LaserModule id",
+            "type": "string"
+          }
+        },
+        "fieldStatus": {
+          "additionalProperties": false,
+          "description": "Where each frame value came from.",
+          "type": "object",
+          "required": [
+            "workAreaMm",
+            "sMax",
+            "laserMode",
+            "junctionDeviationMm",
+            "maxRateMmPerMin",
+            "accelMmPerS2",
+            "travelMm"
+          ],
+          "properties": {
+            "workAreaMm": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "sMax": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "laserMode": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "junctionDeviationMm": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "maxRateMmPerMin": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "accelMmPerS2": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "travelMm": {
+              "$ref": "#/$defs/FieldStatus"
+            }
+          }
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        }
+      }
+    },
     "MachineProfile": {
-      "description": "Machine profile and emulated GRBL settings.",
+      "description": "Machine profile and emulated GRBL settings. Catalog profiles are a MachineFrame plus a LaserModule (combineMachine).",
       "additionalProperties": false,
       "type": "object",
       "required": [
@@ -784,6 +1076,21 @@
           "items": {
             "$ref": "#/$defs/PowerCurvePoint"
           }
+        },
+        "wavelengthNm": {
+          "description": "Laser module emission wavelength (nm). Informational; the v1 burn model does not use it.",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "frameId": {
+          "minLength": 1,
+          "description": "Catalog MachineFrame id this profile was combined from (BURN-30). Absent for hand-built profiles.",
+          "type": "string"
+        },
+        "moduleId": {
+          "minLength": 1,
+          "description": "Catalog LaserModule id this profile was combined from (BURN-30). Absent for hand-built profiles.",
+          "type": "string"
         },
         "provenance": {
           "$ref": "#/$defs/Provenance"
@@ -982,6 +1289,34 @@
         "depthMmPerJPerMm2": {
           "description": "Depth per unit fluence above the removal threshold (mm per J/mm²)",
           "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "ModuleSpot": {
+      "description": "Diode spot as published (width × height at 1/e²). combineMachine converts to Gaussian sigma = d / 4.",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "majorDiameterMm",
+        "minorDiameterMm",
+        "angleDeg"
+      ],
+      "properties": {
+        "majorDiameterMm": {
+          "description": "1/e² diameter along the long axis of the spot (mm)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "minorDiameterMm": {
+          "description": "1/e² diameter along the short axis of the spot (mm)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "angleDeg": {
+          "description": "Rotation of the long axis from machine +X, counter-clockwise (degrees). Depends on how the module is mounted.",
+          "minimum": -180,
+          "maximum": 180,
           "type": "number"
         }
       }

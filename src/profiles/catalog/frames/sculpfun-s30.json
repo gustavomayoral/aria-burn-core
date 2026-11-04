@@ -1,0 +1,44 @@
+{
+  "contractVersion": 1,
+  "id": "sculpfun-s30",
+  "brand": "Sculpfun",
+  "name": "Sculpfun S30 / S30 Pro",
+  "firmware": "grbl",
+  "workAreaMm": {
+    "x": 410,
+    "y": 400
+  },
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": {
+    "x": 6000,
+    "y": 6000
+  },
+  "accelMmPerS2": {
+    "x": 1000,
+    "y": 1000
+  },
+  "travelMm": {
+    "x": 380,
+    "y": 385
+  },
+  "modules": [
+    "sculpfun-s30-pro-10w",
+    "sculpfun-s30-5w"
+  ],
+  "fieldStatus": {
+    "workAreaMm": "sourced",
+    "sMax": "sourced",
+    "laserMode": "sourced",
+    "junctionDeviationMm": "sourced",
+    "maxRateMmPerMin": "sourced",
+    "accelMmPerS2": "sourced",
+    "travelMm": "sourced"
+  },
+  "provenance": {
+    "source": "provisional",
+    "label": "provisional where marked — see fieldStatus",
+    "notes": "Frame values marked sourced come from manufacturer specs or published $$ dumps; the rest are assumed common GRBL defaults. Sources: src/profiles/catalog/SOURCES.md#sculpfun-s30"
+  }
+}

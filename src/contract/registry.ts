@@ -6,6 +6,7 @@
 import { FormatRegistry, type TSchema } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { CONTRACT_VERSION } from './common.ts'
+import { LaserModule, MachineFrame } from './catalog.ts'
 import { JobModel } from './job.ts'
 import { MachineProfile } from './machine.ts'
 import { MaterialProfile } from './material.ts'
@@ -17,7 +18,7 @@ if (!FormatRegistry.Has('date-time'))
   FormatRegistry.Set('date-time', (v) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(v))
 
 /** Root types the Rust side generates. Everything they reference lands in `$defs` too. */
-export const ROOT_SCHEMAS = { JobModel, MachineProfile, MaterialProfile, ChannelEvent, Command } as const
+export const ROOT_SCHEMAS = { JobModel, MachineProfile, MachineFrame, LaserModule, MaterialProfile, ChannelEvent, Command } as const
 
 export const CONTRACT_SCHEMA_ID = `https://aria-burn.dev/contract/v${CONTRACT_VERSION}/contract.schema.json`
 

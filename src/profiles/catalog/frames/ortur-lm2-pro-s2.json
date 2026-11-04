@@ -1,0 +1,44 @@
+{
+  "contractVersion": 1,
+  "id": "ortur-lm2-pro-s2",
+  "brand": "Ortur",
+  "name": "Ortur Laser Master 2 Pro S2",
+  "firmware": "grbl",
+  "workAreaMm": {
+    "x": 400,
+    "y": 400
+  },
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": {
+    "x": 15000,
+    "y": 15000
+  },
+  "accelMmPerS2": {
+    "x": 1000,
+    "y": 1000
+  },
+  "travelMm": {
+    "x": 400,
+    "y": 400
+  },
+  "modules": [
+    "ortur-lu2-4-lf",
+    "ortur-lu2-10a"
+  ],
+  "fieldStatus": {
+    "workAreaMm": "sourced",
+    "sMax": "sourced",
+    "laserMode": "sourced",
+    "junctionDeviationMm": "provisional",
+    "maxRateMmPerMin": "sourced",
+    "accelMmPerS2": "provisional",
+    "travelMm": "provisional"
+  },
+  "provenance": {
+    "source": "provisional",
+    "label": "provisional where marked — see fieldStatus",
+    "notes": "Frame values marked sourced come from manufacturer specs or published $$ dumps; the rest are assumed common GRBL defaults. Sources: src/profiles/catalog/SOURCES.md#ortur-lm2-pro-s2"
+  }
+}

@@ -62,9 +62,19 @@ export const MachineProfile = named(
         description:
           'S → optical power lookup, linear between points, sorted by s with strictly increasing s, non-decreasing power. Must start at s = 0 and end at s = 1.',
       }),
+      wavelengthNm: Type.Optional(Positive('Laser module emission wavelength (nm). Informational; the v1 burn model does not use it.')),
+      frameId: Type.Optional(
+        Type.String({ minLength: 1, description: 'Catalog MachineFrame id this profile was combined from (BURN-30). Absent for hand-built profiles.' }),
+      ),
+      moduleId: Type.Optional(
+        Type.String({ minLength: 1, description: 'Catalog LaserModule id this profile was combined from (BURN-30). Absent for hand-built profiles.' }),
+      ),
       provenance: Provenance,
     },
-    { description: 'Machine profile and emulated GRBL settings.', additionalProperties: false },
+    {
+      description: 'Machine profile and emulated GRBL settings. Catalog profiles are a MachineFrame plus a LaserModule (combineMachine).',
+      additionalProperties: false,
+    },
   ),
 )
 export type MachineProfile = Static<typeof MachineProfile>
@@ -107,14 +117,19 @@ export function interpolateCurve(curve: readonly PowerCurvePoint[], s: number): 
 
 /** Structural checks JSON Schema can't express. Returns problems; empty means valid. */
 export function checkMachineProfile(profile: MachineProfile): string[] {
+  const problems = checkPowerCurve(profile.powerCurve)
+  if (profile.spot.sigmaYMm > profile.spot.sigmaXMm) problems.push('spot.sigmaXMm must be the major axis (>= sigmaYMm)')
+  return problems
+}
+
+/** Power-curve ordering rules shared by MachineProfile and LaserModule. */
+export function checkPowerCurve(c: readonly PowerCurvePoint[]): string[] {
   const problems: string[] = []
-  const c = profile.powerCurve
   if (c[0]?.s !== 0) problems.push('powerCurve must start at s = 0')
   if (c[c.length - 1]?.s !== 1) problems.push('powerCurve must end at s = 1')
   for (let i = 1; i < c.length; i++) {
     if (c[i]!.s <= c[i - 1]!.s) problems.push(`powerCurve[${i}].s must be greater than the previous point`)
     if (c[i]!.power < c[i - 1]!.power) problems.push(`powerCurve[${i}].power must not decrease`)
   }
-  if (profile.spot.sigmaYMm > profile.spot.sigmaXMm) problems.push('spot.sigmaXMm must be the major axis (>= sigmaYMm)')
   return problems
 }

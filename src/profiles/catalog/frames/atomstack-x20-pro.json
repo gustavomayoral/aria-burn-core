@@ -1,0 +1,43 @@
+{
+  "contractVersion": 1,
+  "id": "atomstack-x20-pro",
+  "brand": "Atomstack",
+  "name": "Atomstack X20 Pro",
+  "firmware": "grbl",
+  "workAreaMm": {
+    "x": 400,
+    "y": 400
+  },
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": {
+    "x": 6000,
+    "y": 6000
+  },
+  "accelMmPerS2": {
+    "x": 1000,
+    "y": 1000
+  },
+  "travelMm": {
+    "x": 400,
+    "y": 400
+  },
+  "modules": [
+    "atomstack-20w-quad"
+  ],
+  "fieldStatus": {
+    "workAreaMm": "sourced",
+    "sMax": "provisional",
+    "laserMode": "provisional",
+    "junctionDeviationMm": "provisional",
+    "maxRateMmPerMin": "provisional",
+    "accelMmPerS2": "provisional",
+    "travelMm": "provisional"
+  },
+  "provenance": {
+    "source": "provisional",
+    "label": "provisional where marked — see fieldStatus",
+    "notes": "Frame values marked sourced come from manufacturer specs or published $$ dumps; the rest are assumed common GRBL defaults. Sources: src/profiles/catalog/SOURCES.md#atomstack-x20-pro"
+  }
+}

@@ -2,7 +2,7 @@
 // Shared primitives for the v1 contract.
 //
 // Unit convention: every numeric field carries its unit as a name suffix
-// (Mm, MmPerMin, MmPerS, S, W, JPerMm2, K, Deg). Fields without a suffix are
+// (Mm, MmPerMin, MmPerS, S, W, JPerMm2, K, Deg, Nm). Fields without a suffix are
 // dimensionless. Coordinates are absolute machine millimetres, X right, Y up,
 // origin at the machine's work zero.
 

@@ -1,0 +1,44 @@
+{
+  "contractVersion": 1,
+  "id": "ortur-lm3",
+  "brand": "Ortur",
+  "name": "Ortur Laser Master 3",
+  "firmware": "grbl",
+  "workAreaMm": {
+    "x": 400,
+    "y": 400
+  },
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": {
+    "x": 20000,
+    "y": 20000
+  },
+  "accelMmPerS2": {
+    "x": 1000,
+    "y": 1000
+  },
+  "travelMm": {
+    "x": 400,
+    "y": 400
+  },
+  "modules": [
+    "ortur-lu2-10a",
+    "ortur-lm3-20w"
+  ],
+  "fieldStatus": {
+    "workAreaMm": "sourced",
+    "sMax": "provisional",
+    "laserMode": "provisional",
+    "junctionDeviationMm": "provisional",
+    "maxRateMmPerMin": "sourced",
+    "accelMmPerS2": "provisional",
+    "travelMm": "provisional"
+  },
+  "provenance": {
+    "source": "provisional",
+    "label": "provisional where marked — see fieldStatus",
+    "notes": "Frame values marked sourced come from manufacturer specs or published $$ dumps; the rest are assumed common GRBL defaults. Sources: src/profiles/catalog/SOURCES.md#ortur-lm3"
+  }
+}

@@ -15,7 +15,7 @@ JobModel ─▶ MotionSampler ─▶ sample batches ─▶ SampleStore ─▶ th
 
 | Stage | Module | Rule |
 |---|---|---|
-| Profiles | `profiles.ts` | Loaded from JSON data files and validated with the TypeBox schemas plus `checkMaterialProfile` / `checkMachineProfile`. Nothing is hard-coded. |
+| Profiles | `profiles.ts` | Loaded from JSON data files and validated with the TypeBox schemas plus `checkMaterialProfile` / `checkMachineProfile`. Nothing is hard-coded. Catalog machines (BURN-30) are a `MachineFrame` plus a `LaserModule` from `src/profiles/catalog/`, combined by `combineMachine` (`loadCatalogMachine`) into the same `MachineProfile`. |
 | Sampling | `sampler.ts` | **Interim** trapezoid sampler behind `MotionSampler`, written from scratch (not GRBL; the COD-255 port is GPLv3 in aria-burn). Per move it uses the axis-limited accel and max rate along the move direction. The junction speed is `min(v_a, v_b)·max(0, cos θ)`, followed by backward and forward feasibility passes. Each constant-acceleration block is split into equal-time intervals and sampled at the interval midpoints, per `samples.ts`. Output is byte-identical to the planner's channel batches. |
 | Power | contract `opticalPowerW` | M3 is constant. M4 scales S by actual ÷ programmed speed, then the machine profile's `powerCurve` maps S to optical power, linear between points (COD-256). The provisional diode curve has a dead zone below S 5% and a convex knee up to S 20% (COD-266, provisional). |
 | Store | `sample-store.ts` | Interleaved `[x, y, power·dt]` f32 (uploaded to the GPU as-is), f64 times, source lines, and per-sample `dt` and speed (for the thermal step). A time cutoff is a prefix. Batch sequence gaps are recorded. |

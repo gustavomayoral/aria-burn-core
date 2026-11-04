@@ -11,6 +11,8 @@ Files:
 | `black-cast-acrylic.json` | `MaterialProfile` (`melt`) | Black cast PMMA |
 | `black-anodized-aluminum.json` | `MaterialProfile` (`bleach`) | Black type II anodized aluminum |
 
+The machine catalog (frame + module, about a dozen GRBL diode machines) lives in `../catalog/` with its own `SOURCES.md` (BURN-30); `machine-10w-diode.json` stays the default profile.
+
 The raw settings rows are also kept as data in `derivation.ts`. `src/profiles/profiles.test.ts` validates these files against the TypeBox schema, the exported JSON Schema and the ordering checks. It also recomputes the fluence tables below from the raw settings, so if one is edited the other has to be edited too.
 
 ## 1. Machine profile

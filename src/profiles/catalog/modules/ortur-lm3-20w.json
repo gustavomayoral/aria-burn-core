@@ -1,0 +1,46 @@
+{
+  "contractVersion": 1,
+  "id": "ortur-lm3-20w",
+  "brand": "Ortur",
+  "name": "Laser Master 3 20 W",
+  "opticalPowerW": 20,
+  "wavelengthNm": 445,
+  "spot": {
+    "majorDiameterMm": 0.08,
+    "minorDiameterMm": 0.08,
+    "angleDeg": 90
+  },
+  "powerCurve": [
+    {
+      "s": 0,
+      "power": 0
+    },
+    {
+      "s": 0.05,
+      "power": 0
+    },
+    {
+      "s": 0.1,
+      "power": 0.04
+    },
+    {
+      "s": 0.2,
+      "power": 0.14
+    },
+    {
+      "s": 1,
+      "power": 1
+    }
+  ],
+  "fieldStatus": {
+    "opticalPowerW": "provisional",
+    "wavelengthNm": "provisional",
+    "spot": "provisional",
+    "powerCurve": "provisional"
+  },
+  "provenance": {
+    "source": "provisional",
+    "label": "provisional — vendor figures, not measured on a real laser",
+    "notes": "PROVISIONAL - not validated against real burns. Optical power and spot are vendor marketing figures; the power curve is the generic NUBM-class diode curve (src/profiles/provisional/SOURCES.md §1). BURN-12 replaces these. Sources: src/profiles/catalog/SOURCES.md#ortur-lm3-20w"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "contractVersion": 1,
+  "id": "longer-ray5",
+  "brand": "Longer",
+  "name": "Longer Ray5 (5 W / 10 W)",
+  "firmware": "grbl",
+  "workAreaMm": {
+    "x": 400,
+    "y": 400
+  },
+  "sMax": 1000,
+  "laserMode": true,
+  "junctionDeviationMm": 0.01,
+  "maxRateMmPerMin": {
+    "x": 6000,
+    "y": 6000
+  },
+  "accelMmPerS2": {
+    "x": 1000,
+    "y": 1000
+  },
+  "travelMm": {
+    "x": 400,
+    "y": 400
+  },
+  "modules": [
+    "longer-ray5-10w",
+    "longer-ray5-5w"
+  ],
+  "fieldStatus": {
+    "workAreaMm": "sourced",
+    "sMax": "provisional",
+    "laserMode": "provisional",
+    "junctionDeviationMm": "provisional",
+    "maxRateMmPerMin": "provisional",
+    "accelMmPerS2": "provisional",
+    "travelMm": "provisional"
+  },
+  "provenance": {
+    "source": "provisional",
+    "label": "provisional where marked — see fieldStatus",
+    "notes": "Frame values marked sourced come from manufacturer specs or published $$ dumps; the rest are assumed common GRBL defaults. Sources: src/profiles/catalog/SOURCES.md#longer-ray5"
+  }
+}
