@@ -222,3 +222,25 @@ describe('every catalog machine runs a reference job through planner + sim', () 
     expect(out.verdict.some((v) => v !== Verdict.Untouched)).toBe(true)
   })
 })
+
+describe('catalog index (BURN-31)', () => {
+  it('lists every catalog file, validated', async () => {
+    const index = await import('./catalog/index.ts')
+    expect(index.CATALOG_FILES.frames.sort()).toEqual(frameFiles.map(([f]) => f))
+    expect(index.CATALOG_FILES.modules.sort()).toEqual(moduleFiles.map(([f]) => f))
+    expect(index.CATALOG_FRAMES).toHaveLength(frames.length)
+    expect(index.CATALOG_MODULES).toHaveLength(modules.length)
+    for (const f of index.CATALOG_FRAMES) expect(index.modulesForFrame(f).map((m) => m.id)).toEqual(f.modules)
+  })
+
+  it('reports each profile field’s status by its MachineProfile name', async () => {
+    const { profileFieldStatus } = await import('../contract/index.ts')
+    for (const [, f, m] of combos) {
+      const status = profileFieldStatus(f, m)
+      const profile = combineMachine(f, m)
+      for (const k of Object.keys(status)) expect(profile).toHaveProperty(k)
+      expect(status.spot).toBe(m.fieldStatus.spot)
+      expect(status.accelMmPerS2).toBe(f.fieldStatus.accelMmPerS2)
+    }
+  })
+})

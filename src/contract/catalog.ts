@@ -203,3 +203,20 @@ export function checkCatalog(frames: readonly MachineFrame[], modules: readonly 
   for (const m of modules) if (!used.has(m.id)) problems.push(`module ${m.id} is on no frame`)
   return problems
 }
+
+/** MachineProfile fields a catalog frame or module sets (BURN-31 marks each one in the UI). */
+export const PROFILE_FRAME_FIELDS = ['sMax', 'laserMode', 'junctionDeviationMm', 'maxRateMmPerMin', 'accelMmPerS2', 'travelMm'] as const
+export const PROFILE_MODULE_FIELDS = ['opticalPowerW', 'wavelengthNm', 'spot', 'powerCurve'] as const
+export type ProfileField = (typeof PROFILE_FRAME_FIELDS)[number] | (typeof PROFILE_MODULE_FIELDS)[number]
+
+/**
+ * The status of each MachineProfile field `combineMachine(frame, module)` sets,
+ * keyed by the profile's field name. The frame's `workAreaMm` has no profile
+ * field and is left out.
+ */
+export function profileFieldStatus(frame: MachineFrame, module: LaserModule): Record<ProfileField, FieldStatus> {
+  const out = {} as Record<ProfileField, FieldStatus>
+  for (const k of PROFILE_FRAME_FIELDS) out[k] = frame.fieldStatus[k]
+  for (const k of PROFILE_MODULE_FIELDS) out[k] = module.fieldStatus[k]
+  return out
+}
