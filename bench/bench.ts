@@ -9,9 +9,10 @@
 
 import birchJson from '../src/profiles/provisional/birch-ply.json'
 import machineJson from '../src/profiles/provisional/machine-10w-diode.json'
-import { decodeSampleBatch, tilePoolBytes, type JobModel, type MachineProfile } from '../src/contract/index.ts'
+import { JOB_CELL_BUDGET, decodeSampleBatch, tilePoolBytes, type JobModel, type MachineProfile } from '../src/contract/index.ts'
 import {
   CpuPeakTemperatureStep,
+  GlBurnView,
   GlContextLostError,
   GlOverview,
   GlSim,
@@ -23,6 +24,7 @@ import {
   watchContextLoss,
   loadMachineProfile,
   loadMaterialProfile,
+  detailGrid,
   setupJob,
   simulateCpu,
   stitch,
@@ -725,13 +727,81 @@ document.getElementById('live')!.addEventListener('click', () => void runLive().
 document.getElementById('stages')!.addEventListener('click', () => void runStages().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('tiles')!.addEventListener('click', () => void runTiles().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('run')!.addEventListener('click', () => void run().catch((e) => log(`ERROR ${String(e)}`)))
+/**
+ * BURN-37: the 5 µm 100 mm job with the job pitch under a cell budget. Full-res
+ * at k = 1, at this GPU's default budget and at the Iris Xe budget, then a
+ * 1:1 detail run at the 5 µm detail pitch over a 1920 × 1080 view.
+ */
+async function runPitch(): Promise<void> {
+  lines.length = 0
+  const pass: Record<string, boolean> = {}
+  log(`== Job pitch under a cell budget (BURN-37) · ${sim.caps.renderer} ==`)
+  const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), machine)
+  log(`samples ${job.store.count.toLocaleString()} · birch with the thermal step`)
+  const budgets: [string, number][] = [
+    ['none (k = 1)', Infinity],
+    [`this GPU's default (${(sim.cellBudget / 1e6).toFixed(0)} M)`, sim.cellBudget],
+  ]
+  if (sim.cellBudget !== JOB_CELL_BUDGET) budgets.push([`Iris Xe (${(JOB_CELL_BUDGET / 1e6).toFixed(0)} M)`, JOB_CELL_BUDGET])
+  let last: SimSetup | null = null
+  for (const [label, cellBudget] of budgets) {
+    log()
+    log(`-- budget ${label} --`)
+    try {
+      const setup = sim.fit(job.store, setupJob(job.store.burnBounds!, machine, birch, { cellBudget }), overview)
+      const k = Math.round(setup.grid.pitchMm / setup.detailPitchMm)
+      log(`pitch ${(setup.grid.pitchMm * 1000).toFixed(1)} µm (k = ${k}) · grid ${setup.grid.width} × ${setup.grid.height} = ${((setup.grid.width * setup.grid.height) / 1e6).toFixed(1)} M cells · tiles ${setup.plan.cols} × ${setup.plan.rows}`)
+      const first = timedRun(() => sim.run(job.store, setup, { overview }))
+      overview.drawToCanvas()
+      await nextFrame()
+      const warm: number[] = []
+      for (let i = 0; i < 3; i++) {
+        warm.push(timedRun(() => sim.run(job.store, setup, { overview })).ms)
+        await nextFrame()
+      }
+      log(`full-res: first ${ms(first.ms)} (the thermal step already ran in GlSim.fit, untimed) · warm ×3 ${stats(warm)}`)
+      energyTable('full-res', sim.run(job.store, setup, { measureEnergy: true }).energy!)
+      pass[`budget ${label}: warm full-res < 2 s`] = Math.min(...warm) < 2000
+      last = setup
+    } catch (e) {
+      log(`FAILED: ${String(e)}`)
+      if (e instanceof GlContextLostError) await waitFor((f) => (restored = f), 10000)
+    }
+    sim.releaseTargets()
+  }
+  if (last) {
+    log()
+    log('-- detail view at the 5 µm detail pitch (1920 × 1080 cells around the job centre) --')
+    const burn = new GlBurnView(sim)
+    try {
+      const g = detailGrid(last)
+      const rect = { x: Math.floor(g.width / 2) - 960, y: Math.floor(g.height / 2) - 540, width: 1920, height: 1080 }
+      const cutoff = Infinity
+      const first = timedRun(() => burn.runDetail(job.store, last!, rect, cutoff)).ms
+      const warm: number[] = []
+      for (let i = 0; i < 5; i++) warm.push(timedRun(() => burn.runDetail(job.store, last!, { ...rect, x: rect.x + 37 * i }, cutoff)).ms)
+      const layer = burn.detail
+      log(`detail grid ${g.width} × ${g.height} @ ${(g.pitchMm * 1000).toFixed(1)} µm · layer texel ${layer ? (layer.texelMm * 1000).toFixed(1) : '-'} µm · first ${ms(first)} (bins the samples at the detail pitch) · warm ×5 (panning) ${stats(warm)}`)
+      pass['detail layer at the detail pitch'] = !!layer && Math.abs(layer.texelMm - last.detailPitchMm) < 1e-9
+    } catch (e) {
+      log(`FAILED: ${String(e)}`)
+    }
+    burn.dispose()
+    sim.releaseTargets()
+  }
+  log()
+  for (const [k, v] of Object.entries(pass)) log(`${v ? 'PASS' : 'FAIL'} ${k}`)
+  ;(window as unknown as { __benchPitch: string }).__benchPitch = lines.join('\n')
+}
+
+document.getElementById('pitch')!.addEventListener('click', () => void runPitch().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('fine')!.addEventListener('click', () => void runFine().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))
 ;(window as unknown as { __runBench: typeof run; __runFine: typeof runFine }).__runBench = run
 
-/** ?auto=live (or run, fine, thermal, tiles, stages; comma-separated): run on load and POST each report to the bench server. */
+/** ?auto=live (or run, fine, thermal, tiles, stages, pitch; comma-separated): run on load and POST each report to the bench server. */
 async function autoRun(names: string[]): Promise<void> {
-  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages }
+  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages, pitch: runPitch }
   for (const name of names) {
     const fn = runs[name]
     if (!fn) {

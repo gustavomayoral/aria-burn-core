@@ -1,0 +1,35 @@
+[auto=pitch]
+== Job pitch under a cell budget (BURN-37) · ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version) ==
+samples 19,688,836 · birch with the thermal step
+
+-- budget none (k = 1) --
+pitch 5.0 µm (k = 1) · grid 20012 × 20040 = 401.0 M cells · tiles 3 × 3
+full-res: first 2027.3 ms (the thermal step already ran in GlSim.fit, untimed) · warm ×3 min 1824.1 ms / median 1989.0 ms / max 2002.8 ms
+  full-res expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+
+-- budget this GPU's default (256 M) --
+pitch 10.0 µm (k = 2) · grid 10006 × 10020 = 100.3 M cells · tiles 2 × 2
+full-res: first 795.9 ms (the thermal step already ran in GlSim.fit, untimed) · warm ×3 min 405.8 ms / median 406.3 ms / max 445.2 ms
+  full-res expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+
+-- budget Iris Xe (50 M) --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 = 44.6 M cells · tiles 1 × 1
+full-res: first 528.7 ms (the thermal step already ran in GlSim.fit, untimed) · warm ×3 min 234.2 ms / median 238.3 ms / max 247.1 ms
+  full-res expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+
+-- detail view at the 5 µm detail pitch (1920 × 1080 cells around the job centre) --
+detail grid 20012 × 20040 @ 5.0 µm · layer texel 5.0 µm · first 1408.2 ms (bins the samples at the detail pitch) · warm ×5 (panning) min 10.4 ms / median 10.7 ms / max 13.4 ms
+
+PASS budget none (k = 1): warm full-res < 2 s
+PASS budget this GPU's default (256 M): warm full-res < 2 s
+PASS budget Iris Xe (50 M): warm full-res < 2 s
+PASS detail layer at the detail pitch

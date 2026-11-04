@@ -20,7 +20,7 @@ JobModel ─▶ MotionSampler ─▶ sample batches ─▶ SampleStore ─▶ th
 | Power | contract `opticalPowerW` | M3 is constant. M4 scales S by actual ÷ programmed speed, then the machine profile's `powerCurve` maps S to optical power, linear between points (COD-256). The provisional diode curve has a dead zone below S 5% and a convex knee up to S 20% (COD-266, provisional). |
 | Store | `sample-store.ts` | Interleaved `[x, y, power·dt]` f32 (uploaded to the GPU as-is), f64 times, source lines, and per-sample `dt` and speed (for the thermal step). A time cutoff is a prefix. Batch sequence gaps are recorded. |
 | Thermal | `thermal.ts`, `gl/gl-thermal.ts` | Only for materials with `thermal.kind = peakTemperature` (COD-258, below). Per-sample absorbed energy (char raises absorption) and dose energy, plus the bulk-temperature map. Runs once per job and material; every tile, the scrub and the hover reuse it. |
-| Deposit | `cpu.ts` `depositCpu`, `gl/shaders.ts` `DEPOSIT_VS` | `E·absorption / pitch²`, split bilinearly over the four nearest cell centres. On the GPU each sample is one instance of four 1-pixel points on exact cell centres, added into R32F with `EXT_float_blend`. Without that extension the CPU deposit is uploaded instead. Pitch = minor spot σ ÷ 3. |
+| Deposit | `cpu.ts` `depositCpu`, `gl/shaders.ts` `DEPOSIT_VS` | `E·absorption / pitch²`, split bilinearly over the four nearest cell centres. On the GPU each sample is one instance of four 1-pixel points on exact cell centres, added into R32F with `EXT_float_blend`. Without that extension the CPU deposit is uploaded instead. Detail pitch = minor spot σ ÷ 3; the job grid may use an integer multiple of it (Job pitch, below). |
 | Blur | `kernel.ts`, `BLUR_FS`, `SKEW_BLUR_FS` | Elliptical Gaussian (COD-256), `σ_total = √(σ_spot² + σ_heat²)` per spot axis, rotated by `spot.angleDeg`. Truncated at 3σ, normalised by the discrete sum, zero outside the tile. It runs along machine X, then along Y. For machine-aligned spots (the provisional diode is at 90°) that is a plain separable blur at unchanged cost. For a rotated spot the Y pass is sheared (contract `shearedKernel`): row offset t reads at `x + shear·t`, split linearly over two cells, and the X pass is narrowed by the split's variance. The full covariance, including the X–Y term, is reproduced. The sheared pass does two fetches per tap, so it costs about 1.5× an aligned blur. |
 | Response | `response.ts`, `RESPONSE_FS` | With a thermal model every rule below reads **thermal dose** instead of fluence (same thresholds), and the GPU tiles hold dose. **char**: tone ramp `((F−start)/(end−start))^γ`, Lab lerp, depth above the ablation threshold. **melt**: frost ramp and depth above removal. A polished edge (F ≥ frostFull, below removal, with a 4-neighbour at or above removal) shows the base colour. **bleach**: mark ramp, depth always 0. Lab (D65) → sRGB8 per cell. |
 | Verdict | contract `classifyFluence` / `classifyThermal`, `RESPONSE_FS` | Per-cell bucket (untouched / under / in range / over / fire risk) in an R8UI target. With a thermal model, fire risk is the bulk temperature at or above `fireRisk.thresholdK`. |
@@ -144,20 +144,46 @@ overhead (about 0.5 ms for 7 passes), so the bin budget sets the cost. Iris Xe i
 
 **Not yet measured:** the Tauri WKWebView and Windows/Iris Xe. COD-252 measured Iris Xe at about 1.6× the macOS full-res time, with sync overhead on top.
 
-**Finding: the provisional diode's pitch.** The 10 W profile (σ 0.03 × 0.015 mm) gives a 5 µm pitch, so a 100 mm job is 20012² cells in 9 tiles (11× the spike's cells) and 19.7 M samples. Results on the M1:
+**Finding: the provisional diode's pitch.** The 10 W profile (σ 0.03 × 0.015 mm) gives a 5 µm pitch, so a 100 mm job is 20012² cells in 9 tiles (11× the spike's cells) and 19.7 M samples. On the M1 that was 1.26 s warm (blur ~0.8 s) and 4.0 s cold, and Iris Xe would take an estimated 8–15 s. BURN-37 settles it with a job cell budget (next section).
 
-- Full-res: 1.26 s warm. Blur is about 0.8 s of that, and the first run is 4.0 s.
-- Coarse scrub: 14 ms median.
+## Job pitch (BURN-37)
 
-Iris Xe will very likely exceed 2 s on this job. The options need a decision outside this issue:
+Normative rules: `src/contract/tiling.ts` (`jobPitchMm`) and `deposit.ts` (`coarsePitchKernel`). In short:
 
-- base the pitch on σ_total (heat included) rather than σ_spot,
-- use a per-axis pitch,
-- refresh full-res tile by tile with the coarse image underneath.
+- **Two pitches.** σ_min ÷ 3 is the **detail pitch**. The **job grid** (full-res overview, scrub, tiles) uses `k ×` detail pitch, with `k` the smallest integer that keeps `planJobGrid` within the **job cell budget**. Integer `k` nests the lattices: a job cell is exactly `k × k` detail cells.
+- **Budget per GPU.** By renderer, like the byte budget: 50 M cells on Intel integrated GPUs, 256 M elsewhere (`defaultJobCellBudget`, `GlSim.cellBudget`). Pass it as `setupJob(…, { cellBudget: sim.cellBudget })`; without it (CPU reference, tests) `k = 1`. The 5 µm 100 mm job gets `k = 3` (15 µm, 44.6 M cells, one tile) on Iris Xe and `k = 2` (10 µm, 100 M cells) on the M1.
+- **Detail view.** `runDetail` runs at the detail pitch on `detailSetup(setup)`, the same job planned at the detail pitch. Its `rect` is in `detailGrid(setup)` cells: pass that grid to `visibleCells`. Spatial bins are bucketed on the detail pitch, so full and detail runs share them.
+- **Live jobs** size `k` from the machine's travel area, so the pitch never changes while the bounds grow.
+- **Blur compensation.** The bilinear deposit spreads each sample by pitch²/6 of variance per axis, so a coarser grid widens lines. The job grid's kernel gives back `(pitch² − detailPitch²)/6` per axis (`coarsePitchKernel`). At `k = 1` nothing changes, and the golden images are untouched.
+
+**Accuracy cost** (`scripts/burn-37-accuracy.ts`, CPU reference against `k = 1`, provisional diode, all three materials; `docs/bench/burn-37-accuracy-cpu.txt`, and `-uncompensated.txt` without the kernel correction):
+
+| k (pitch) | energy, every stage | line σ | peak vs `k = 1` box-averaged | fluence error p99 (of peak) | verdict differs (marked cells) | verdict edge shift, mean |
+|---|---|---|---|---|---|---|
+| 2 (10 µm) | 0.9999–1.0000 | +0.4 % | −0.2 to 0 % | 0.1–0.3 % | 2.1–2.8 % | 5 µm |
+| 3 (15 µm) | 0.9998–1.0000 | −0.1 to +0.3 % | +1.3 to +1.7 % | 0.7–1.2 % | 0.7–1.5 % | 5–5.5 µm |
+| 4 (20 µm) | 0.9998–1.0000 | +1.8 to +2.0 % | −0.3 to +0.1 % | 0.4–0.7 % | 0.8–4.0 % | 5–6 µm |
+
+- Edge cells are where verdicts differ, and the mean shift is one detail cell. Without the compensation, line width grows by 1.4 % at `k = 3` and 4.4 % at `k = 4`, with a peak up to −3.5 %.
+- Melt's polished edge is one cell wide, so at `k > 1` it is `k` detail cells wide in the overview (colour Δ up to 97 on those cells). The detail view shows it at the detail pitch.
+- Once the job pitch passes σ_total minor (~19 µm for birch, `k ≥ 4`), single lines lose a few % of their peak to cell sampling. On Iris Xe that starts at jobs over ~105 mm square (7071 cells × 15 µm).
+
+**Performance** (`docs/bench/burn-37-pitch-macos-m1.txt`, bench button "Job pitch (BURN-37)", 5 µm 100 mm raster, birch with thermal, M1):
+
+| Budget | Job pitch | Cells | Warm full-res (median) |
+|---|---|---|---|
+| none | 5 µm | 401 M | 1989 ms |
+| M1 default, 256 M | 10 µm | 100 M | 406 ms |
+| Iris Xe, 50 M | 15 µm | 44.6 M | 238 ms |
+
+- A detail run of 1920 × 1080 cells at 5 µm takes ~11 ms while panning.
+- The first detail run takes 1.4 s, because it bins all 19.7 M samples (a one-tile job grid never needs bins).
+- Iris Xe is not measured yet.
 
 ## Commands
 
 ```sh
 pnpm check   # typecheck + tests (CPU reference, tiling seams, scrub, live, goldens)
 pnpm bench   # serve bench/ (WebGL2), open http://localhost:5199 and click Run benchmark
+pnpm tsx scripts/burn-37-accuracy.ts   # coarse job pitch vs the detail pitch (CPU)
 ```
