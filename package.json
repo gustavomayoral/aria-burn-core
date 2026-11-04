@@ -1,7 +1,7 @@
 {
   "name": "aria-burn-core",
   "version": "0.1.0",
-  "description": "TypeScript simulation core for the Laser Sim material burn model",
+  "description": "TypeScript simulation core for the Aria Burn material burn model",
   "license": "MIT",
   "private": true,
   "type": "module",

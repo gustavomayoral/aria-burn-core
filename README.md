@@ -1,6 +1,6 @@
 # aria-burn-core
 
-TypeScript simulation core for the Laser Sim material burn model: deposit, blur, response kinds, outputs and tiling.
+TypeScript simulation core for the Aria Burn material burn model: deposit, blur, response kinds, outputs and tiling.
 
 It is consumed by the [aria-burn](../aria-burn) app and will later be embedded in Aria Studio.
 
