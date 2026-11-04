@@ -1,0 +1,78 @@
+BURN-37 job-pitch bench on Windows / Intel Iris Xe, run 2026-11-03, branch burn-37 at df730f9.
+Windows 11 Home 10.0.26300 · Edge 156.0.4314.58 · WebView2 Runtime 156.0.4314.58
+GPU Intel Iris Xe Graphics (0x9A49), ANGLE / Direct3D 11. Reports copied from the bench server log
+(`npx vite bench --port 5200 --strictPort`; 5199 was taken by an older server). Each run was alone,
+in a fresh process: WebView2 by starting aria-burn (debug build of burn-37 at 662ea0f,
+ARIA_BURN_BENCH_URL=http://localhost:5200/?auto=pitch), then Edge with a new --user-data-dir.
+
+Summary
+- The 50 M budget passes in both: the 5 µm 100 mm job runs at 15 µm (k = 3, 44.6 M cells), warm
+  full-res median 1583 ms / max 1830 ms in WebView2 and 1600 / 1755 ms in Edge. First run 1023 ms
+  (WebView2) and 1554 ms (Edge). That meets the BURN-37 "done when" bar, with little margin: the
+  WebView2 max is 170 ms under 2 s.
+- Without a budget (5 µm, 401 M cells) warm full-res is 5.2 s (WebView2) and 10.3 s (Edge), inside the
+  8–15 s estimate in the issue for Edge and below it for WebView2.
+- 15 µm runs as 7 × 7 tiles here, not one tile as on the M1: the tile side comes from the 768 MiB GPU
+  budget minus the resident per-sample data, which leaves about 953² per tile. Fewer, larger tiles
+  might cut the time further; not tried.
+- In WebView2 the warm 15 µm runs (1494–1830 ms) were slower than the first (1023 ms). Edge didn't
+  show this. One run each, so this may be noise.
+- Detail view at 5 µm: first run 2.4 s (WebView2) / 2.6 s (Edge), binning the samples at the detail
+  pitch; panning 31 ms / 50 ms.
+
+=== 1. WebView2, ?auto=pitch, fresh app process ===
+[auto=pitch]
+== Job pitch under a cell budget (BURN-37) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step
+
+-- budget none (k = 1) --
+pitch 5.0 µm (k = 1) · grid 20012 × 20040 = 401.0 M cells · tiles 21 × 21
+full-res: first 5298.7 ms (the thermal step already ran in GlSim.fit, untimed) · warm ×3 min 4791.9 ms / median 5230.7 ms / max 7420.1 ms
+  full-res expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+
+-- budget this GPU's default (50 M) --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 = 44.6 M cells · tiles 7 × 7
+full-res: first 1022.5 ms (the thermal step already ran in GlSim.fit, untimed) · warm ×3 min 1493.9 ms / median 1582.8 ms / max 1829.7 ms
+  full-res expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+
+-- detail view at the 5 µm detail pitch (1920 × 1080 cells around the job centre) --
+detail grid 20012 × 20040 @ 5.0 µm · layer texel 5.0 µm · first 2433.2 ms (bins the samples at the detail pitch) · warm ×5 (panning) min 30.0 ms / median 30.9 ms / max 31.1 ms
+
+FAIL budget none (k = 1): warm full-res < 2 s
+PASS budget this GPU's default (50 M): warm full-res < 2 s
+PASS detail layer at the detail pitch
+
+
+=== 2. Edge, ?auto=pitch, fresh profile ===
+[auto=pitch]
+== Job pitch under a cell budget (BURN-37) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step
+
+-- budget none (k = 1) --
+pitch 5.0 µm (k = 1) · grid 20012 × 20040 = 401.0 M cells · tiles 21 × 21
+full-res: first 10017.1 ms (the thermal step already ran in GlSim.fit, untimed) · warm ×3 min 9705.3 ms / median 10282.4 ms / max 10879.3 ms
+  full-res expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+
+-- budget this GPU's default (50 M) --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 = 44.6 M cells · tiles 7 × 7
+full-res: first 1554.3 ms (the thermal step already ran in GlSim.fit, untimed) · warm ×3 min 1472.6 ms / median 1600.3 ms / max 1755.0 ms
+  full-res expected 1.6866e+3 J
+    after deposit 1.6866e+3 (1.0000) PASS
+    after blur H  1.6866e+3 (1.0000) PASS
+    after blur V  1.6866e+3 (1.0000) PASS
+
+-- detail view at the 5 µm detail pitch (1920 × 1080 cells around the job centre) --
+detail grid 20012 × 20040 @ 5.0 µm · layer texel 5.0 µm · first 2634.3 ms (bins the samples at the detail pitch) · warm ×5 (panning) min 48.2 ms / median 49.6 ms / max 52.0 ms
+
+FAIL budget none (k = 1): warm full-res < 2 s
+PASS budget this GPU's default (50 M): warm full-res < 2 s
+PASS detail layer at the detail pitch
