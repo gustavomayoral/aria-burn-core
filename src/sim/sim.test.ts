@@ -531,7 +531,7 @@ describe('tile budget by GPU bytes (BURN-36)', () => {
     const d = compareRuns(untiled, stitch(simulateCpu(store, untiled)), stitch(run.result.tiles))
     expect(d.maxRelF).toBeLessThan(1e-5)
     expect(d.colorDelta).toBeLessThanOrEqual(1)
-  })
+  }, 30_000) // ~4.5 s alone; over 5 s in the full suite on Iris Xe laptops
 
   it('gives up below the minimum side, and other errors are not retried', () => {
     let calls = 0
