@@ -73,7 +73,7 @@ const contextWatch = watchContextLoss(canvas, {
     log(`webglcontextrestored: rebuilt GlSim (tile side cap ${sim.maxTileSide})`)
     restored?.()
   },
-})
+}, gl)
 const waitFor = (set: (f: () => void) => void, timeoutMs: number) =>
   new Promise<boolean>((resolve) => {
     const t = setTimeout(() => resolve(false), timeoutMs)

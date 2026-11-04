@@ -163,6 +163,11 @@ export class GpuLedger {
   bytesOf(obj: object | null | undefined): number {
     return obj ? (this.sizes.get(obj) ?? 0) : 0
   }
+  /** Forget everything: a lost context took every object with it (BURN-39). */
+  clear(): void {
+    this.sizes.clear()
+    this.total = 0
+  }
 }
 
 const ledgers = new WeakMap<WebGL2RenderingContext, GpuLedger>()

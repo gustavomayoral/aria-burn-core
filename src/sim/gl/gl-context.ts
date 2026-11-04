@@ -8,6 +8,11 @@
 // GlBurnView, build new ones on the restored context, re-run. A new GlSim
 // keeps any tile side learned from real allocation failures (gl-sim.ts); a
 // context loss itself teaches none, since on Iris Xe it isn't a size limit.
+// The GPU ledger is per context object, which survives the loss, so pass the
+// context and the watch clears it on loss; otherwise the dead objects' bytes
+// would shrink the tile budget after restore (BURN-39).
+
+import { ledger } from './gl-util.ts'
 
 export type ContextState = 'ok' | 'lost' | 'restored'
 
@@ -29,13 +34,14 @@ export interface ContextWatch {
  * Watch a canvas for context loss. Calls preventDefault on webglcontextlost so
  * the browser restores the context, then hands both events to the handlers.
  */
-export function watchContextLoss(canvas: EventTarget, handlers: ContextHandlers): ContextWatch {
+export function watchContextLoss(canvas: EventTarget, handlers: ContextHandlers, gl?: WebGL2RenderingContext): ContextWatch {
   let state: ContextState = 'ok'
   let losses = 0
   const lost = (e: Event) => {
     e.preventDefault()
     state = 'lost'
     losses++
+    if (gl) ledger(gl).clear()
     handlers.onLost?.(e)
   }
   const restored = (e: Event) => {

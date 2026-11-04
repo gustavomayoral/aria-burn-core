@@ -35,6 +35,7 @@ import {
   GlAllocationError,
   LiveJob,
   contextGone,
+  ledger,
   SampleBins,
   SampleStore,
   blurCpu,
@@ -472,6 +473,20 @@ describe('WebGL context loss (BURN-36)', () => {
     watch.stop()
     canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
     expect(seen).toEqual(['lost', 'restored'])
+  })
+
+  it('clears the context’s GPU ledger on loss, so dead objects don’t shrink the budget (BURN-39)', () => {
+    const canvas = new EventTarget()
+    const gl = {} as WebGL2RenderingContext
+    const tex = {}
+    ledger(gl).set(tex, 1 << 20)
+    const watch = watchContextLoss(canvas, {}, gl)
+    canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }))
+    expect(ledger(gl).total).toBe(0)
+    // Deleting a dead object afterwards leaves the total alone.
+    ledger(gl).set(tex, 0)
+    expect(ledger(gl).total).toBe(0)
+    watch.stop()
   })
 
   it('sees a loss the browser has not flagged yet, after finish, via CONTEXT_LOST_WEBGL', () => {
