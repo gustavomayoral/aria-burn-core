@@ -275,7 +275,7 @@ describe('response kinds', () => {
     expect(counts.get(Verdict.Over)).toBeGreaterThan(0)
     expect(counts.get(Verdict.InRange)).toBeGreaterThan(0)
     expect(out.depthMm.some((d) => d > 0)).toBe(true)
-  })
+  }, 20_000) // ~1.8 s alone; over 5 s in the full suite on Iris Xe laptops
 })
 
 /** Compare two stitched runs cell by cell. */
@@ -312,7 +312,7 @@ describe('tiling', () => {
     expect(d.maxRelF).toBeLessThan(1e-5)
     expect(d.colorDelta).toBeLessThanOrEqual(1)
     expect(d.verdictDiff / d.cells).toBeLessThan(1e-4)
-  })
+  }, 20_000) // ~3 s alone; over 5 s in the full suite on Iris Xe laptops
 
   it('live lattice tiles also match untiled, stay within budget and never move as the grid grows', () => {
     const untiled = setupJob(job.burnBounds!, roundSpot, wood)
