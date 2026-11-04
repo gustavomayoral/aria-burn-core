@@ -1,0 +1,148 @@
+BURN-33 bench in the real Laser Sim webview — Windows, WebView2, ANGLE / Direct3D 11 (Intel Iris Xe), run 2026-11-03.
+Opened with aria-burn's ARIA_BURN_BENCH_URL (branch burn-33, commit 9ee8c33, debug build) pointed at this
+repo's `pnpm bench` page with ?auto=run,fine,thermal,live (window in the foreground). Reports were copied
+from the `pnpm bench` log. The 5 µm job lost the WebGL context (gl error 37442 = CONTEXT_LOST_WEBGL), so
+thermal and live were then rerun on their own with ?auto=thermal,live after restarting the app.
+Both runs are below, the first in the order run, fine, thermal, live, then the rerun.
+Windows 11 Home 10.0.26300 · WebView2 Runtime 156.0.4314.58
+CPU Intel Core i5-1135G7 @ 2.40 GHz · GPU Intel Iris Xe Graphics (0x9A49), driver 30.0.101.1191
+On AC power, battery at 100 %.
+
+Summary (against the COD-251/252 budgets: full-res < 2 s, coarse scrub < 50 ms):
+
+                                        WebView2, Iris Xe (this run)   M1 WKWebView (burn-33-tauri-macos-m1.txt)
+  spike job, warm full-res              1396.3 ms (max 2748.7)         116 ms
+  spike job, cold full-res              6465.2 ms                      1373 ms
+  spike job, coarse scrub (median)      16.3 ms                        4 ms
+  spike job, thermal step               1810.5 ms (rerun)              708 ms
+  5 µm job, warm full-res               FAILED                         1827 ms
+  5 µm job, first full-res              FAILED                         4833 ms (incl. binning)
+  5 µm job, first with thermal          FAILED                         3497 ms
+  5 µm job, thermal step                FAILED                         1575 ms
+  5 µm job, coarse scrub (median/max)   FAILED                         11 / 132 ms
+  live refresh, spike, at 100 %         FAILED                         819 ms
+  live refresh, 5 µm, at 100 %          FAILED                         1761 ms
+
+Reading it:
+- Same failures as in Edge: every 5 µm case fails with "framebuffer incomplete: 0x8cdd"
+  (GL_FRAMEBUFFER_UNSUPPORTED) after the grid is planned as 3 × 3 tiles padded to ≤ 6711², and the
+  WebGL context is lost after it. The live case fails at its first spike-job refresh even with a fresh
+  context (gl error before: 0 in the rerun).
+- The spike job passes on the median (warm full-res 1396.3 ms, scrub 16.3 ms), but warm full-res
+  varies widely (542.2 to 2748.7 ms) and its max is over 2 s. That is about 12× the M1.
+  With thermal, warm full-res is 361.9 ms and the thermal step 1.81 s.
+- Measured only; no code changed.
+
+[auto=run]
+== Environment ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl vendor: Google Inc. (Intel)
+MAX_TEXTURE_SIZE 16384 · EXT_float_blend true · timer query true
+timing: wall clock (performance.now), single sync per pass (finish + readPixels) unless "stage-synced"
+
+== Spike-equivalent job: 100 × 100 mm raster, 0.1 mm interval, σ 0.05 mm, 6000 mm/min, M4 S300, birch ==
+samples 5,905,951 in 361 batches · job 1121.2 s
+grid 6010 × 6020 @ 16.67 µm · tiles 1 · kernel radius 10 cells
+interim sampler 1347.3 ms · sample store 435.8 ms (CPU, once per job)
+sample upload 111.6 ms (once per job)
+full-res: cold 6465.2 ms · warm ×10 min 542.2 ms / median 1396.3 ms / max 2748.7 ms → < 2 s PASS
+  stage-synced: deposit 248.6 ms · blurH 113.6 ms · blurV 122.1 ms · response 28.5 ms
+coarse scrub: first after full-res 552.7 ms · warm ×10 at moving cutoffs min 13.8 ms / median 16.3 ms / max 17.6 ms → < 50 ms PASS
+  stage-synced: deposit 30.1 ms · blurH 3.1 ms · blurV 2.7 ms · response 2.6 ms
+
+== Fluence conservation (GPU, Σ cell · pitch² over tile cores) ==
+  full-res expected 1.8309e+3 J
+    after deposit 1.8309e+3 (1.0000) PASS
+    after blur H  1.8309e+3 (1.0000) PASS
+    after blur V  1.8309e+3 (1.0000) PASS
+  coarse expected 1.8309e+3 J
+    after deposit 1.8309e+3 (1.0000) PASS
+    after blur H  1.8309e+3 (1.0000) PASS
+    after blur V  1.8308e+3 (0.9999) PASS
+  coarse / full-res after blur V: 0.9999 → PASS
+
+== GPU vs CPU reference, tiled vs untiled (provisional 10 W diode, σ 0.03 × 0.015 mm, birch) ==
+grid 1440 × 1440 · tiled plan 3 × 3 tiles of ≤ 700² (margin 20)
+  GPU untiled vs CPU:    max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU tiled vs CPU:      max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU tiled vs untiled:  max |Δfluence| 0.00e+0 of peak · max Δcolour 0 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  CPU-deposit fallback (no EXT_float_blend) tiled vs CPU: max |Δfluence| 2.37e-7 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  energy after blur V: CPU 1.46621e+1 · GPU tiled 1.09070e+1
+
+== Rotated spot (COD-256): same job, provisional diode spot at 30° (sheared Y pass) ==
+skew taps 27 · shear 0.5194 · margin 24
+  GPU untiled vs CPU:    max |Δfluence| 2.29e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2096704
+  GPU tiled vs CPU:      max |Δfluence| 2.29e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2096704
+  GPU tiled, rotated expected 1.0021e+1 J
+    after deposit 1.0021e+1 (1.0000) PASS
+    after blur H  1.0021e+1 (1.0000) PASS
+    after blur V  1.0021e+1 (1.0000) PASS
+  blur H+V, aligned min 10.3 ms / median 10.4 ms / max 10.4 ms · rotated min 12.9 ms / median 13.1 ms / max 13.4 ms
+
+[auto=fine]
+== Provisional-pitch job: 100 × 100 mm raster on the provisional 10 W diode (σ 0.03 × 0.015 mm → 5 µm pitch) ==
+samples 19,688,836 · sampler 1953.1 ms · store 1166.8 ms
+grid 20012 × 20040 · tiles 3 × 3 (padded ≤ 6711²)
+FAILED: Error: framebuffer incomplete: 0x8cdd
+gl error: 0
+
+[auto=thermal]
+== Thermal step (COD-258): GPU vs CPU reference ==
+ERROR Error: framebuffer incomplete: 0x8cdd
+
+[auto=live]
+== Live job (BURN-33): cost of one refresh as the stream grows ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 37442
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+FAILED: Error: framebuffer incomplete: 0x8cdd
+gl error: 0
+
+# Rerun on its own: ?auto=thermal,live
+
+[auto=thermal]
+== Thermal step (COD-258): GPU vs CPU reference ==
+samples 47,614 · job 8.9 s · thermal grid 90 × 90 @ 0.100 mm · bins 890 × 10.0 ms (lag 2) · active 848
+CPU reference 5010.0 ms · GPU 253.6 ms (incl. readback)
+  per-sample eAbs max rel Δ 2.49e-4 · dose weight max |Δ| 2.18e-4 · bulk map max |Δ| 195.149 K of 4945 K, cells off by > 1 %: 229 / 8100
+  energy: Σ eAbs 1.46634e+1 J (CPU grid holds 1.46634e+1 J)
+  pipeline GPU vs CPU (dose):  max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  pipeline GPU tiled vs CPU:   max |Δfluence| 2.66e-6 of peak · max Δcolour 1 (cells > 1: 0) · verdict mismatches 0 / 2073600
+  GPU dose, untiled expected 1.0907e+1 J
+    after deposit 1.0907e+1 (1.0000) PASS
+    after blur H  1.0907e+1 (1.0000) PASS
+    after blur V  1.0907e+1 (1.0000) PASS
+
+== Cost: spike job, σ 0.05 mm, 100 × 100 mm raster ==
+samples 5,905,951 · job 1121 s · grid 6010 × 6020 · tiles 1
+thermal grid 254 × 255 @ 0.402 mm · bins 1024 × 1095 ms (lag 1) · active 1025
+thermal step (once per job/material, incl. statics and readback): min 1643.4 ms / median 1810.5 ms / max 3534.5 ms
+  last run: CPU statics 875.3 ms · GPU bin loop 169.0 ms · readback + bulk map 766.2 ms
+full-res: fluence only min 418.1 ms / median 454.3 ms / max 760.5 ms · thermal, first (uploads bulk map) 1914.2 ms · warm min 336.5 ms / median 361.9 ms / max 383.6 ms
+coarse scrub with thermal: min 6.4 ms / median 7.3 ms / max 277.8 ms
+  full-res dose expected 1.8309e+3 J
+    after deposit 1.8309e+3 (1.0000) PASS
+    after blur H  1.8309e+3 (1.0000) PASS
+    after blur V  1.8309e+3 (1.0000) PASS
+
+== Cost: provisional diode, 5 µm pitch, 100 × 100 mm raster ==
+samples 19,688,836 · job 1121 s · grid 20012 × 20040 · tiles 9
+FAILED: Error: framebuffer incomplete: 0x8cdd
+gl error: 37442
+
+[auto=live]
+== Live job (BURN-33): cost of one refresh as the stream grows ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 0
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | tiles | setup    | thermal   | coarse   | refresh  | next wait
+FAILED: Error: framebuffer incomplete: 0x8cdd
+gl error: 0
