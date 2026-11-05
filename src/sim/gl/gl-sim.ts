@@ -22,6 +22,7 @@ import { SampleBins, binLattice, bucketsOf, type BucketWindow } from '../bins.ts
 import type { SampleStore } from '../sample-store.ts'
 import { defaultThermalStep, peakTemperatureModel, thermalFor, type ThermalResult } from '../thermal.ts'
 import { GlPeakTemperatureStep } from './gl-thermal.ts'
+import { VertexWindow } from './vertex-window.ts'
 import { PER_SAMPLE_WIDTH } from './thermal-shaders.ts'
 import { planSide, replan, tileSide, withTileFallback } from '../tile-budget.ts'
 import {
@@ -339,11 +340,10 @@ export class GlSim {
   private readonly overviewProgram: Program
   private readonly emptyVao: WebGLVertexArrayObject
   private readonly sampleVao: WebGLVertexArrayObject
-  private readonly sampleBuffer: WebGLBuffer
-  private sampleCapacity = 0
-  private uploadedCount = 0
-  private uploadedStore: SampleStore | null = null
-  private uploadedVersion = -1
+  /** The store's samples (x, y, E) on the GPU a window at a time, in store order (BURN-38). */
+  private readonly sampleWindow: VertexWindow
+  /** Bins (x, y, E, store index) on the GPU a window at a time: whole-job or window bins, whichever is drawn. */
+  private readonly binWindow: VertexWindow
   private readonly pools = new Map<'full' | 'coarse', TargetSet>()
   private readonly weightTextures = new Map<string, WebGLTexture>()
   private readonly reduceTargets = new Map<string, Target>()
@@ -351,17 +351,13 @@ export class GlSim {
   private lastFbo: WebGLFramebuffer | null = null
   private bins: SampleBins | null = null
   private binStore: SampleStore | null = null
-  private readonly binBuffer: WebGLBuffer
   private checkpoints: { key: string; store: SampleStore; spacing: number; targets: Target[] } | null = null
-  private readonly binIndexBuffer: WebGLBuffer
   /**
    * Window bins for region runs while the whole-job bins don't exist (BURN-41):
    * the first detail run bins only the buckets near its view, not every sample.
    */
   private windowBins: SampleBins | null = null
   private windowBinStore: SampleStore | null = null
-  private readonly windowBinBuffer: WebGLBuffer
-  private readonly windowBinIndexBuffer: WebGLBuffer
   /** The GPU thermal step; null without EXT_float_blend (the CPU reference runs instead). */
   readonly thermalStep: GlPeakTemperatureStep | null
   private thermalState: {
@@ -419,13 +415,10 @@ export class GlSim {
     this.overviewProgram = new Program(gl, FULLSCREEN_VS, OVERVIEW_FS)
     this.emptyVao = gl.createVertexArray()!
     this.sampleVao = gl.createVertexArray()!
-    this.sampleBuffer = gl.createBuffer()!
-    this.binBuffer = gl.createBuffer()!
-    this.binIndexBuffer = gl.createBuffer()!
-    this.windowBinBuffer = gl.createBuffer()!
-    this.windowBinIndexBuffer = gl.createBuffer()!
+    this.sampleWindow = new VertexWindow(gl, 12)
+    this.binWindow = new VertexWindow(gl, 16)
     gl.bindVertexArray(this.sampleVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleBuffer)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleWindow.buffer)
     gl.enableVertexAttribArray(0)
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0)
     gl.vertexAttribDivisor(0, 1)
@@ -490,27 +483,35 @@ export class GlSim {
     this.thermalState = null
   }
 
-  /** Upload samples not yet on the GPU (appends only, so live jobs upload incrementally). */
+  /**
+   * Put the store's first samples on the GPU. Since BURN-38 samples reach it
+   * a bounded window at a time as runs draw them (vertex-window.ts), so this
+   * only fills the first window; runs don't need it called first.
+   */
   syncSamples(store: SampleStore): void {
-    const gl = this.gl
-    if (this.uploadedStore === store && this.uploadedVersion === store.version) return
-    if (this.uploadedStore !== store) this.uploadedCount = 0
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleBuffer)
-    if (store.count > this.sampleCapacity) {
-      this.sampleCapacity = Math.max(store.count, Math.ceil(this.sampleCapacity * 1.5), 4096)
-      // STATIC_DRAW even though live jobs append (BURN-38): ANGLE D3D11 binds a static buffer directly, but
-      // streams a dynamic one's drawn range into a renamed buffer on every draw (coarse and unbinned runs
-      // draw millions of samples at once), which costs the GPU process far more than the buffer.
-      gl.bufferData(gl.ARRAY_BUFFER, this.sampleCapacity * 12, gl.STATIC_DRAW)
-      trackBuffer(gl, this.sampleBuffer, this.sampleCapacity * 12)
-      this.uploadedCount = 0
-    }
-    if (store.count > this.uploadedCount) {
-      gl.bufferSubData(gl.ARRAY_BUFFER, this.uploadedCount * 12, store.xye, this.uploadedCount * 3, (store.count - this.uploadedCount) * 3)
-      this.uploadedCount = store.count
-    }
-    this.uploadedStore = store
-    this.uploadedVersion = store.version
+    if (store.count) this.holdSamples(store, 0, 1)
+  }
+
+  /** Hold store samples [lo, hi) in the sample window; returns the store index of its first sample. */
+  private holdSamples(store: SampleStore, lo: number, hi: number): number {
+    return this.sampleWindow.hold(store, store.version, lo, hi, store.count, (dst, from, to) =>
+      new Float32Array(dst, 0, (to - from) * 3).set(store.xye.subarray(from * 3, to * 3)),
+    )
+  }
+
+  /** Hold bins [lo, hi) in the bin window, interleaved (x, y, E, store index); returns the first bin held. */
+  private holdBins(bins: SampleBins, lo: number, hi: number): number {
+    return this.binWindow.hold(bins, bins.version, lo, hi, bins.count, (dst, from, to) => {
+      const f = new Float32Array(dst, 0, (to - from) * 4)
+      const u = new Uint32Array(dst, 0, (to - from) * 4)
+      const { xye, index } = bins
+      for (let i = from, o = 0; i < to; i++, o += 4) {
+        f[o] = xye[i * 3]!
+        f[o + 1] = xye[i * 3 + 1]!
+        f[o + 2] = xye[i * 3 + 2]!
+        u[o + 3] = index[i]!
+      }
+    })
   }
 
   private pool(kind: 'full' | 'coarse', w: number, h: number): TargetSet {
@@ -539,18 +540,17 @@ export class GlSim {
   tileSide(store?: SampleStore): number {
     const full = this.pools.get('full')
     let other = ledger(this.gl).total - (full?.bytes ?? 0)
-    if (store) {
-      if (this.uploadedStore !== store) other += Math.max(0, store.count * 12 - this.sampleCapacity * 12)
-      if (this.binStore !== store) other += store.count * 16
-    }
+    // Samples and bins take a bounded window each (BURN-38), whatever the job's size.
+    if (store) other += this.sampleWindow.pendingBytes + this.binWindow.pendingBytes
     return tileSide({ budgetBytes: this.gpuBudgetBytes, otherBytes: other, maxSide: Math.min(this.maxTileSide, this.caps.maxTextureSize) })
   }
 
   /**
    * Allocate what a full run needs besides the tile pool, so the budget sees
-   * it, and return the tile side left: samples, the thermal step's textures
-   * (per-sample energies are 8 B a sample) and, whenever the job could be
-   * more than one tile, the spatial bins.
+   * it, and return the tile side left: the sample window, the thermal step's
+   * textures (per-sample energies are 8 B a sample) and window, and whenever
+   * the job could be more than one tile, the spatial bins (built on the CPU;
+   * the GPU holds a window of them).
    */
   private prepare(store: SampleStore, setup: SimSetup, overview?: GlOverview): number {
     overview?.resize(setup.grid.width, setup.grid.height)
@@ -598,26 +598,13 @@ export class GlSim {
     this.dropThermal()
     this.thermalStep?.release()
     this.bins = this.binStore = null
-    const gl = this.gl
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.binBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
-    trackBuffer(gl, this.binBuffer, 0)
-    trackBuffer(gl, this.binIndexBuffer, 0)
     this.dropWindowBins()
+    this.sampleWindow.release()
+    this.binWindow.release()
   }
 
   private dropWindowBins(): void {
-    if (!this.windowBins) return
     this.windowBins = this.windowBinStore = null
-    const gl = this.gl
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinIndexBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
-    trackBuffer(gl, this.windowBinBuffer, 0)
-    trackBuffer(gl, this.windowBinIndexBuffer, 0)
   }
 
   private dropCheckpoints(): void {
@@ -657,30 +644,40 @@ export class GlSim {
    * Draw samples [first, first + count) of `buffer` (interleaved xye) as deposit
    * points. With `indexBuffer`, `buffer` is a bin buffer and indexBuffer holds its store indices.
    */
-  private drawSamples(buffer: WebGLBuffer, first: number, count: number, indexBuffer: WebGLBuffer | null = null): void {
-    const binned = !!indexBuffer
+  /**
+   * Deposit draws of samples [first, first + count): of the store, in store
+   * order, or of `bins` (with their store indices for the thermal deposit).
+   * They come from a bounded window (BURN-38); a range past the window's end
+   * is drawn as consecutive draws, in the same order.
+   */
+  private drawSamples(store: SampleStore, first: number, count: number, bins: SampleBins | null = null): void {
     if (count <= 0) return
     const gl = this.gl
+    const stride = bins ? 16 : 12
     gl.bindVertexArray(this.sampleVao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, first * 12)
-    if (this.active) {
-      this.depositThermal.i('u_first', first).i('u_binned', binned ? 1 : 0)
-      if (binned) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, indexBuffer)
-        gl.enableVertexAttribArray(1)
-        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 4, first * 4)
-        gl.vertexAttribDivisor(1, 1)
-      } else gl.disableVertexAttribArray(1)
+    for (let i = first, end = first + count; i < end; ) {
+      const base = bins ? this.holdBins(bins, i, i + 1) : this.holdSamples(store, i, i + 1)
+      const to = Math.min(end, (bins ? this.binWindow : this.sampleWindow).to)
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, (i - base) * stride)
+      if (this.active) {
+        this.depositThermal.i('u_first', i).i('u_binned', bins ? 1 : 0)
+        if (bins) {
+          gl.enableVertexAttribArray(1)
+          gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, stride, (i - base) * stride + 12)
+          gl.vertexAttribDivisor(1, 1)
+        } else gl.disableVertexAttribArray(1)
+      }
+      gl.drawArraysInstanced(gl.POINTS, 0, 4, to - i)
+      if (this.active && bins) gl.disableVertexAttribArray(1)
+      i = to
     }
-    gl.drawArraysInstanced(gl.POINTS, 0, 4, count)
-    if (this.active && binned) gl.disableVertexAttribArray(1)
   }
 
   /**
-   * Spatial bins of the store for this grid's pitch, uploaded (rebuilt when
-   * the store or pitch changed). Runs do this themselves; public for the
-   * stage diagnostics bench.
+   * Spatial bins of the store for this grid's pitch (rebuilt when the store
+   * or pitch changed). They live on the CPU; runs draw them through the bin
+   * window (BURN-38). Runs do this themselves; public for the stage
+   * diagnostics bench.
    */
   ensureBins(store: SampleStore, setup: SimSetup): SampleBins {
     const gl = this.gl
@@ -689,14 +686,6 @@ export class GlSim {
       this.dropWindowBins()
       this.bins = new SampleBins(store, bucketMm)
       this.binStore = store
-      // DYNAMIC_DRAW (BURN-38): bins are drawn a bucket range at a time, and ANGLE D3D11 streams just those
-      // ranges from a dynamic buffer, where a static one costs twice its size (a staging copy) once drawn.
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.binBuffer)
-      gl.bufferData(gl.ARRAY_BUFFER, this.bins.xye, gl.DYNAMIC_DRAW)
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
-      gl.bufferData(gl.ARRAY_BUFFER, this.bins.index, gl.DYNAMIC_DRAW)
-      trackBuffer(gl, this.binBuffer, this.bins.xye.byteLength)
-      trackBuffer(gl, this.binIndexBuffer, this.bins.index.byteLength)
     }
     return this.bins!
   }
@@ -733,13 +722,6 @@ export class GlSim {
     const padY = Math.max(1, Math.ceil((q.by1 - q.by0 + 1) / 2))
     const window: BucketWindow = { bx0: q.bx0 - padX, by0: q.by0 - padY, bx1: q.bx1 + padX, by1: q.by1 + padY }
     const bins = new SampleBins(store, bucketMm, window)
-    const gl = this.gl
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, bins.xye, gl.DYNAMIC_DRAW)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinIndexBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, bins.index, gl.DYNAMIC_DRAW)
-    trackBuffer(gl, this.windowBinBuffer, bins.xye.byteLength)
-    trackBuffer(gl, this.windowBinIndexBuffer, bins.index.byteLength)
     this.windowBins = bins
     this.windowBinStore = store
     return bins
@@ -764,9 +746,7 @@ export class GlSim {
       if (q.bx0 > q.bx1 || q.by0 > q.by1) return
     }
     const bins = whole ? this.ensureBins(store, setup) : this.ensureWindowBins(store, setup, x0, y0, x1, y1)
-    const buffer = whole ? this.binBuffer : this.windowBinBuffer
-    const index = whole ? this.binIndexBuffer : this.windowBinIndexBuffer
-    for (const [first, count] of bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(buffer, first, count, index)
+    for (const [first, count] of bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(store, first, count, bins)
   }
 
   /**
@@ -817,13 +797,13 @@ export class GlSim {
         gl.clear(gl.COLOR_BUFFER_BIT)
       }
       this.beginDeposit(setup, whole, t.fbo)
-      this.drawSamples(this.sampleBuffer, i * cp.spacing, cp.spacing)
+      this.drawSamples(store, i * cp.spacing, cp.spacing)
       cp.targets.push(t)
     }
     gl.disable(gl.BLEND)
     if (j > 0) copy(cp.targets[j - 1]!, dst)
     this.beginDeposit(setup, whole, dst.fbo)
-    this.drawSamples(this.sampleBuffer, j * cp.spacing, n - j * cp.spacing)
+    this.drawSamples(store, j * cp.spacing, n - j * cp.spacing)
   }
 
   private weights(k: Kernel1D): WebGLTexture {
@@ -1048,7 +1028,7 @@ export class GlSim {
           else {
             this.beginDeposit(setup, padded, ts.a.fbo)
             if (binned) this.depositBinned(store, setup, padded, options.timeCutoffS ?? Infinity, !!options.region)
-            else this.drawSamples(this.sampleBuffer, 0, n)
+            else this.drawSamples(store, 0, n)
           }
           gl.disable(gl.BLEND)
         } else {

@@ -8,13 +8,10 @@
 // a fresh-heat texture, gather again) and two lateral passes that spread the
 // fresh heat, scissored to the few cells around the injected samples.
 //
-// The samples and their static attributes reach the GPU in chunks of whole
-// bins (BURN-38): one bounded vertex buffer, re-filled from the store as the
-// loop moves on, instead of the whole sample buffer beside a whole-job statics
-// buffer. On WebView2 / ANGLE D3D11 a big vertex buffer costs twice its size
-// once drawn from (a staging copy), and a DYNAMIC_DRAW one is streamed into a
-// renamed buffer on every draw, which took the GPU process ~1 GB over its
-// resting size during a 5 µm job's step; a chunk caps both.
+// The samples and their static attributes reach the GPU through a bounded
+// vertex window (vertex-window.ts, BURN-38), refilled from the store as the
+// bin loop moves on, instead of the whole sample buffer beside a whole-job
+// statics buffer.
 //
 // The per-sample (eAbs, eDose) texture stays on the GPU for the fine deposit
 // (GlSim looks samples up by store index); the CPU arrays are read back only
@@ -48,8 +45,9 @@ import {
   type ThermalStep,
 } from '../thermal.ts'
 import { sameThermalPlan, type PeakTemperatureModel, type ThermalPlan } from '../../contract/index.ts'
-import { GlContextLostError, Program, deleteTexture, framebuffer, target, texture, trackBuffer, type Target } from './gl-util.ts'
+import { GlContextLostError, Program, deleteTexture, framebuffer, target, texture, type Target } from './gl-util.ts'
 import { FULLSCREEN_VS } from './shaders.ts'
+import { VertexWindow } from './vertex-window.ts'
 import {
   PER_SAMPLE_WIDTH,
   THERMAL_BULK_FS,
@@ -81,9 +79,7 @@ type Rect = [x0: number, y0: number, x1: number, y1: number]
 /** Spare capacity for per-sample buffers of a live run (BURN-35): regrowing them re-uploads everything. */
 const LIVE_HEADROOM = 1.25
 
-/** Samples per chunk of the vertex buffer (BURN-38): 24 MiB at 6 floats a sample; grown only for a wider bin. */
-export const THERMAL_CHUNK_SAMPLES = 1 << 20
-/** Floats per sample in a chunk: x, y, energy, then flash factor, bulk gain, bin fraction. */
+/** Floats per sample in the vertex window: x, y, energy, then flash factor, bulk gain, bin fraction. */
 const CHUNK_STRIDE = 6
 
 /**
@@ -143,11 +139,10 @@ export class GlPeakTemperatureStep implements ThermalStep {
   private readonly gather: Program
   private readonly vao: WebGLVertexArrayObject
   private readonly emptyVao: WebGLVertexArrayObject
-  /** The chunk of samples on the GPU: interleaved (x, y, E, flash, bulk gain, bin fraction), store indices [chunkFrom, chunkTo). */
-  private readonly chunkBuffer: WebGLBuffer
-  private chunkCap = 0
-  private chunkFrom = 0
-  private chunkTo = 0
+  /** Samples on the GPU a window at a time: interleaved (x, y, E, flash, bulk gain, bin fraction) by store index. */
+  private readonly window: VertexWindow
+  /** Bumped whenever the statics behind the window change (every advance). */
+  private windowVersion = 0
   private readonly tapTextures = new Map<string, WebGLTexture>()
   private owned: WebGLTexture[] = []
   private ownedFbos: WebGLFramebuffer[] = []
@@ -164,9 +159,9 @@ export class GlPeakTemperatureStep implements ThermalStep {
     this.bulkProgram = new Program(gl, THERMAL_BULK_VS, THERMAL_BULK_FS)
     this.vao = gl.createVertexArray()!
     this.emptyVao = gl.createVertexArray()!
-    this.chunkBuffer = gl.createBuffer()!
+    this.window = new VertexWindow(gl, CHUNK_STRIDE * 4)
     gl.bindVertexArray(this.vao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.window.buffer)
     gl.enableVertexAttribArray(0)
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, 0)
     gl.enableVertexAttribArray(1)
@@ -185,49 +180,26 @@ export class GlPeakTemperatureStep implements ThermalStep {
     this.ownedFbos = []
     this.current = null
     this.resume = null
-    this.dropChunk()
-  }
-
-  /** Free the chunk buffer (it is refilled on the next run). */
-  private dropChunk(): void {
-    if (!this.chunkCap) return
-    const gl = this.gl
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
-    trackBuffer(gl, this.chunkBuffer, 0)
-    this.chunkCap = this.chunkFrom = this.chunkTo = 0
+    this.window.release()
   }
 
   /**
-   * Make store indices [lo, hi) available in the chunk buffer, refilling it
-   * from lo (as far as it holds) when they aren't all there. Returns the
-   * store index of the chunk's first sample.
+   * Hold store indices [lo, hi) in the vertex window (refilling it from lo when
+   * they aren't all there) and return the store index of its first sample.
    */
   private chunk(store: SampleStore, statics: Float32Array, lo: number, hi: number): number {
-    if (lo >= this.chunkFrom && hi <= this.chunkTo) return this.chunkFrom
-    const gl = this.gl
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
-    if (hi - lo > this.chunkCap) {
-      // STATIC_DRAW: ANGLE D3D11 binds it directly; a DYNAMIC_DRAW buffer is streamed on every draw.
-      this.chunkCap = Math.max(THERMAL_CHUNK_SAMPLES, hi - lo)
-      gl.bufferData(gl.ARRAY_BUFFER, this.chunkCap * CHUNK_STRIDE * 4, gl.STATIC_DRAW)
-      trackBuffer(gl, this.chunkBuffer, this.chunkCap * CHUNK_STRIDE * 4)
-    }
-    const to = Math.min(store.count, lo + this.chunkCap)
-    const data = new Float32Array((to - lo) * CHUNK_STRIDE)
-    const { xye } = store
-    for (let i = lo, o = 0; i < to; i++, o += CHUNK_STRIDE) {
-      data[o] = xye[i * 3]!
-      data[o + 1] = xye[i * 3 + 1]!
-      data[o + 2] = xye[i * 3 + 2]!
-      data[o + 3] = statics[i * 3]!
-      data[o + 4] = statics[i * 3 + 1]!
-      data[o + 5] = statics[i * 3 + 2]!
-    }
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
-    this.chunkFrom = lo
-    this.chunkTo = to
-    return lo
+    return this.window.hold(this, this.windowVersion, lo, hi, store.count, (dst, from, to) => {
+      const out = new Float32Array(dst, 0, (to - from) * CHUNK_STRIDE)
+      const { xye } = store
+      for (let i = from, o = 0; i < to; i++, o += CHUNK_STRIDE) {
+        out[o] = xye[i * 3]!
+        out[o + 1] = xye[i * 3 + 1]!
+        out[o + 2] = xye[i * 3 + 2]!
+        out[o + 3] = statics[i * 3]!
+        out[o + 4] = statics[i * 3 + 1]!
+        out[o + 5] = statics[i * 3 + 2]!
+      }
+    })
   }
 
   private taps(alpha: number, dt: number, pitch: number): { tex: WebGLTexture; radius: number } {
@@ -423,8 +395,8 @@ export class GlPeakTemperatureStep implements ThermalStep {
         statics[i * 3 + 2] = binFraction(store.tS[i]!, k, plan.binS)
       }
     const t1 = performance.now()
-    // The chunk holds this store's samples as of this call; statics from `first` on just changed.
-    this.chunkFrom = this.chunkTo = 0
+    // Statics from `first` on just changed: what the window holds is stale.
+    this.windowVersion++
 
     let widest = 1
     for (let k = fromBin; k < plan.binCount; k++) widest = Math.max(widest, binStart[k + 1]! - binStart[k]!)
@@ -562,7 +534,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
       gl.blendFunc(gl.ONE, gl.ONE)
       // Instanced: the sample attribute steps per instance, from `first` (chunk-relative offset).
       gl.bindVertexArray(this.vao)
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.window.buffer)
       gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, (first - base) * CHUNK_STRIDE * 4)
       gl.vertexAttribDivisor(0, 1)
       gl.activeTexture(gl.TEXTURE0)
@@ -626,8 +598,8 @@ export class GlPeakTemperatureStep implements ThermalStep {
     gridUniforms(this.bulkProgram.use()).i('u_perSample', 0)
     // MAX blend: chunk order doesn't matter. Starts with the chunk the loop left, if it is in range.
     for (let lo = first; lo < n; ) {
-      const base = lo >= this.chunkFrom && lo < this.chunkTo ? this.chunkFrom : this.chunk(store, statics, lo, Math.min(n, lo + 1))
-      const hi = Math.min(n, this.chunkTo)
+      const base = this.chunk(store, statics, lo, lo + 1)
+      const hi = Math.min(n, this.window.to)
       this.bulkProgram.i('u_base', base)
       gl.drawArrays(gl.POINTS, lo - base, hi - lo)
       lo = hi
