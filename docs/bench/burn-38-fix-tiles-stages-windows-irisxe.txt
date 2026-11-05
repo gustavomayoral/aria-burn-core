@@ -1,0 +1,334 @@
+BURN-38 fix, rerun of ?auto=tiles,stages in WebView2 (Aria Burn app) on Windows / Intel Iris Xe, run 2026-11-05.
+Windows 11 Home 26H2 (10.0.26300.9818) · Edge and WebView2 Runtime 156.0.4314.58 · Intel Iris Xe (0x9A49), driver
+30.0.101.1191, ANGLE / Direct3D 11 · 16 GB RAM, on AC power · all binaries x64.
+aria-burn-core burn-38 at a1a9853 (the fix; same sim code as the commit that lands on main) · aria-burn main 9232a1a
+(debug build, unchanged). Bench server `npx vite bench --port 5299 --strictPort` on the laptop. Each run is a fresh
+process started on the logged-in desktop (one-shot interactive scheduled task, C:\Users\gusta\src\_claude\winrun.ps1)
+with a 1 Hz sampler of "\GPU Process Memory(*)\Shared Usage" for the browser GPU process (mem2.ps1). The laptop's
+Claude app and WSL (~11 GB) stayed open; free RAM before each run is given. No build, test or other bench ran.
+
+Result: PASS 3 of 3, no context loss (before the fix: lost 3 of 3, burn-38-tiles-stages-windows-irisxe.txt).
+                       before (a21d142 report)                    after (a1a9853)
+  5 µm job, fit + run  context lost in fit's thermal step,         run 1 / 2 / 3: first 5810 / 5809 / 15588 ms,
+                       441 tiles ≤ 995 planned                      second 5345 / 5189 / 9258 ms, 25 tiles ≤ 4048
+  stages, fluence      run 4: lost after the full run              all steps ok ×3, full run 36 tiles ≤ 3380
+  stages, birch        run 4: thermal 12.2 s, lost in upload bins  all steps ok ×3, thermal 5.1 / 4.9 / 7.7 s,
+                                                                    full run 144 tiles ≤ 1710 in 4.7 / 4.9 / 7.1 s
+  GPU process at loss  2370-2377 MiB                                peak 1582 / 2053 / 1650 MiB, no loss
+  The webglcontextlost lines below are the bench's own WEBGL_lose_context check ("context loss recovers").
+Run 3 ran slow from its 5 µm job on (the laptop was busier for a few minutes; it was idle at 5 % CPU right after);
+it passed all the same. The peaks: run 2's 2053 is one reading at stages step 4, the overview's first use (its
+zero-initialisation, ~1.4 GB above rest for a moment), which this bench does after the thermal step; the app
+sizes the overview first (fit). At rest the 5 µm job's run sits at 1.2-1.5 GB.
+
+=== run 1: WebView2, ?auto=tiles,stages (6695 MB RAM free before) ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 1582 at 44 s; least RAM free 2458 MiB
+      0s    16 ·    4s   926 ·    5s   830 ·    6s  1455 ·    8s   251 ·    9s   656 ·   10s   662 ·   11s   671
+     12s   919 ·   13s  1204 ·   18s  1219 ·   20s  1215 ·   23s   949 ·   24s   799 ·   25s   779 ·   27s   820
+     28s   304 ·   30s   300 ·   32s   296 ·   33s  1442 ·   35s  1438 ·   38s   447 ·   40s   599 ·   42s   604
+     43s   608 ·   44s  1582 ·   45s  1474 ·   47s  1470 ·   49s   646 ·   50s   476 ·   51s   472
+
+[auto=tiles]
+== Tile budget (BURN-36) ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+MAX_TEXTURE_SIZE 16384 · MAX_RENDERBUFFER_SIZE 16384
+gl error before: 0 · budget 768 MiB · tile side now 6882 · resident 0 MiB
+
+-- pool step: pool alone --
+   2048² pool    68 MiB · resident    68 MiB · ok 11.3 ms
+   3072² pool   153 MiB · resident   153 MiB · ok 25.4 ms
+   4096² pool   272 MiB · resident   272 MiB · ok 49.3 ms
+   4608² pool   344 MiB · resident   344 MiB · ok 50.6 ms
+   5120² pool   425 MiB · resident   425 MiB · ok 72.9 ms
+   5632² pool   514 MiB · resident   514 MiB · ok 82.0 ms
+   6016² pool   587 MiB · resident   587 MiB · ok 119.9 ms
+   6400² pool   664 MiB · resident   664 MiB · ok 89.0 ms
+   6711² pool   730 MiB · resident   730 MiB · ok 128.1 ms
+   7168² pool   833 MiB · resident   833 MiB · ok 102.9 ms
+   7680² pool   956 MiB · resident   956 MiB · ok 168.8 ms
+   8192² pool  1088 MiB · resident  1088 MiB · ok 175.4 ms
+   8704² pool  1228 MiB · resident  1228 MiB · ok 176.0 ms
+   9000² pool  1313 MiB · resident  1313 MiB · ok 218.0 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+-- pool step: beside a 4096² overview (the burn view) --
+overview 4096² resident: 443 MiB
+   2048² pool    68 MiB · resident   511 MiB · ok 314.6 ms
+   3072² pool   153 MiB · resident   596 MiB · ok 14.5 ms
+   4096² pool   272 MiB · resident   715 MiB · ok 23.8 ms
+   4608² pool   344 MiB · resident   787 MiB · ok 30.4 ms
+   5120² pool   425 MiB · resident   868 MiB · ok 76.8 ms
+   5632² pool   514 MiB · resident   957 MiB · ok 72.7 ms
+   6016² pool   587 MiB · resident  1029 MiB · ok 90.1 ms
+   6400² pool   664 MiB · resident  1107 MiB · ok 84.9 ms
+   6711² pool   730 MiB · resident  1173 MiB · ok 118.7 ms
+   7168² pool   833 MiB · resident  1276 MiB · ok 99.6 ms
+   7680² pool   956 MiB · resident  1399 MiB · ok 149.2 ms
+   8192² pool  1088 MiB · resident  1531 MiB · ok 168.8 ms
+   8704² pool  1228 MiB · resident  1671 MiB · ok 176.2 ms
+   9000² pool  1313 MiB · resident  1756 MiB · ok 209.2 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+suggested GPU budget: ~1756 MiB (largest pool beside the overview, plus the overview)
+
+-- 5 µm 100 mm job, planned with GlSim.fit() --
+samples 19,688,836 · grid 20012 × 20040 · tiles 5 × 5 (padded ≤ 4048) · resident before the pool 341 MiB
+first 5810.4 ms · second 5345.1 ms · ran 25 tiles (padded ≤ 4048) · replanned false · failed sides none
+resident after: 638 MiB · context lost: false
+
+-- forced allocation failure: spike job, pools over 2048² refused --
+setup tile 6020 → ran 9 tiles ≤ 2027 · failed 6020, 4256 · learned cap 3009
+  after fallback expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4555e+3 (1.0000) PASS
+
+-- context loss and recovery (WEBGL_lose_context) --
+webglcontextlost: waiting for restore
+webglcontextrestored: rebuilt GlSim (tile side cap 9000)
+lost event true · run on lost context threw GlContextLostError · restored true · re-run after rebuild true · losses seen 1
+
+PASS  5 µm job renders without context loss
+PASS  forced failure falls back to smaller tiles
+PASS  context loss recovers
+gl error: 0
+[auto=stages]
+== Upload stages (BURN-36): 5 µm 100 mm job, one GPU step at a time ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 0 · budget 768 MiB
+Each line: wall time incl. CPU work, finish + 1-pixel readback · resident after · gl error · context lost
+SLOW marks steps over 1.8 s of wall time; Windows resets the GPU when one GPU command runs past ~2 s (TDR),
+so a slow step that then loses the context is the suspect. Check Event Viewer for display event 4101.
+samples 19,688,836 (225 MiB xye) · CPU sampler 3260.5 ms · store 778.8 ms
+
+-- fluence only (no thermal step) --
+  1. first sample window                38.4 ms · resident    34 MiB · gl error 0 · lost false
+  2. thermal step                        0.2 ms · resident    34 MiB · gl error 0 · lost false
+  3. bins (CPU; GPU window)            651.4 ms · resident    34 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     2.5 ms · resident   476 MiB · gl error 0 · lost false
+  5. tile pool 1024²                     5.2 ms · resident   493 MiB · gl error 0 · lost false
+  6. one 1024² region run               41.5 ms · resident   518 MiB · gl error 0 · lost false
+  7. full run, 36 tiles ≤ 3380        4673.0 ms · resident   685 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+-- birch with the thermal step --
+  1. first sample window               107.2 ms · resident    34 MiB · gl error 0 · lost false
+  2. thermal step                     5101.1 ms · resident   240 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  3. bins (CPU; GPU window)            972.2 ms · resident   240 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     1.4 ms · resident   682 MiB · gl error 0 · lost false
+  5. tile pool 1024²                     5.1 ms · resident   699 MiB · gl error 0 · lost false
+  6. one 1024² region run               48.6 ms · resident   732 MiB · gl error 0 · lost false
+  7. full run, 144 tiles ≤ 1710       4745.3 ms · resident   762 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+fluence only (no thermal step): all steps ok
+birch with the thermal step: all steps ok
+gl error: 0
+=== run 2: WebView2, ?auto=tiles,stages (6658 MB RAM free before) ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 2053 at 43 s; least RAM free 2153 MiB
+      0s    16 ·    4s   926 ·    5s  1144 ·    6s  1455 ·    8s   250 ·   11s   662 ·   12s   658 ·   13s   662
+     15s  1202 ·   20s  1217 ·   23s  1213 ·   25s   957 ·   26s   777 ·   28s   818 ·   29s   304 ·   31s   300
+     32s  1743 ·   33s  1448 ·   34s  1440 ·   35s  1436 ·   37s   434 ·   38s   445 ·   39s   597 ·   41s   604
+     42s   606 ·   43s  2053 ·   44s  1472 ·   46s  1468 ·   48s  1215 ·   49s   474
+
+[auto=tiles]
+== Tile budget (BURN-36) ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+MAX_TEXTURE_SIZE 16384 · MAX_RENDERBUFFER_SIZE 16384
+gl error before: 0 · budget 768 MiB · tile side now 6882 · resident 0 MiB
+
+-- pool step: pool alone --
+   2048² pool    68 MiB · resident    68 MiB · ok 11.7 ms
+   3072² pool   153 MiB · resident   153 MiB · ok 27.1 ms
+   4096² pool   272 MiB · resident   272 MiB · ok 37.4 ms
+   4608² pool   344 MiB · resident   344 MiB · ok 46.7 ms
+   5120² pool   425 MiB · resident   425 MiB · ok 71.0 ms
+   5632² pool   514 MiB · resident   514 MiB · ok 91.3 ms
+   6016² pool   587 MiB · resident   587 MiB · ok 123.1 ms
+   6400² pool   664 MiB · resident   664 MiB · ok 90.9 ms
+   6711² pool   730 MiB · resident   730 MiB · ok 141.2 ms
+   7168² pool   833 MiB · resident   833 MiB · ok 100.4 ms
+   7680² pool   956 MiB · resident   956 MiB · ok 147.5 ms
+   8192² pool  1088 MiB · resident  1088 MiB · ok 172.4 ms
+   8704² pool  1228 MiB · resident  1228 MiB · ok 172.1 ms
+   9000² pool  1313 MiB · resident  1313 MiB · ok 214.5 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+-- pool step: beside a 4096² overview (the burn view) --
+overview 4096² resident: 443 MiB
+   2048² pool    68 MiB · resident   511 MiB · ok 331.7 ms
+   3072² pool   153 MiB · resident   596 MiB · ok 13.5 ms
+   4096² pool   272 MiB · resident   715 MiB · ok 23.0 ms
+   4608² pool   344 MiB · resident   787 MiB · ok 29.2 ms
+   5120² pool   425 MiB · resident   868 MiB · ok 72.9 ms
+   5632² pool   514 MiB · resident   957 MiB · ok 67.1 ms
+   6016² pool   587 MiB · resident  1029 MiB · ok 88.0 ms
+   6400² pool   664 MiB · resident  1107 MiB · ok 85.7 ms
+   6711² pool   730 MiB · resident  1173 MiB · ok 122.1 ms
+   7168² pool   833 MiB · resident  1276 MiB · ok 97.3 ms
+   7680² pool   956 MiB · resident  1399 MiB · ok 150.6 ms
+   8192² pool  1088 MiB · resident  1531 MiB · ok 169.0 ms
+   8704² pool  1228 MiB · resident  1671 MiB · ok 176.2 ms
+   9000² pool  1313 MiB · resident  1756 MiB · ok 207.8 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+suggested GPU budget: ~1756 MiB (largest pool beside the overview, plus the overview)
+
+-- 5 µm 100 mm job, planned with GlSim.fit() --
+samples 19,688,836 · grid 20012 × 20040 · tiles 5 × 5 (padded ≤ 4048) · resident before the pool 341 MiB
+first 5808.7 ms · second 5189.1 ms · ran 25 tiles (padded ≤ 4048) · replanned false · failed sides none
+resident after: 638 MiB · context lost: false
+
+-- forced allocation failure: spike job, pools over 2048² refused --
+setup tile 6020 → ran 9 tiles ≤ 2027 · failed 6020, 4256 · learned cap 3009
+  after fallback expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4555e+3 (1.0000) PASS
+
+-- context loss and recovery (WEBGL_lose_context) --
+webglcontextlost: waiting for restore
+webglcontextrestored: rebuilt GlSim (tile side cap 9000)
+lost event true · run on lost context threw GlContextLostError · restored true · re-run after rebuild true · losses seen 1
+
+PASS  5 µm job renders without context loss
+PASS  forced failure falls back to smaller tiles
+PASS  context loss recovers
+gl error: 0
+[auto=stages]
+== Upload stages (BURN-36): 5 µm 100 mm job, one GPU step at a time ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 0 · budget 768 MiB
+Each line: wall time incl. CPU work, finish + 1-pixel readback · resident after · gl error · context lost
+SLOW marks steps over 1.8 s of wall time; Windows resets the GPU when one GPU command runs past ~2 s (TDR),
+so a slow step that then loses the context is the suspect. Check Event Viewer for display event 4101.
+samples 19,688,836 (225 MiB xye) · CPU sampler 2142.5 ms · store 719.5 ms
+
+-- fluence only (no thermal step) --
+  1. first sample window                52.2 ms · resident    34 MiB · gl error 0 · lost false
+  2. thermal step                        0.1 ms · resident    34 MiB · gl error 0 · lost false
+  3. bins (CPU; GPU window)            650.6 ms · resident    34 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     2.0 ms · resident   476 MiB · gl error 0 · lost false
+  5. tile pool 1024²                     4.8 ms · resident   493 MiB · gl error 0 · lost false
+  6. one 1024² region run               41.4 ms · resident   518 MiB · gl error 0 · lost false
+  7. full run, 36 tiles ≤ 3380        4820.1 ms · resident   685 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+-- birch with the thermal step --
+  1. first sample window                88.6 ms · resident    34 MiB · gl error 0 · lost false
+  2. thermal step                     4878.2 ms · resident   240 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  3. bins (CPU; GPU window)            975.7 ms · resident   240 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     1.2 ms · resident   682 MiB · gl error 0 · lost false
+  5. tile pool 1024²                     5.7 ms · resident   699 MiB · gl error 0 · lost false
+  6. one 1024² region run               42.9 ms · resident   732 MiB · gl error 0 · lost false
+  7. full run, 144 tiles ≤ 1710       4939.4 ms · resident   762 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+fluence only (no thermal step): all steps ok
+birch with the thermal step: all steps ok
+gl error: 0
+=== run 3: WebView2, ?auto=tiles,stages (6657 MB RAM free before) ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 1650 at 82 s; least RAM free 1523 MiB
+      0s    16 ·    4s   926 ·    5s   830 ·    6s  1455 ·    8s   249 ·   11s   653 ·   12s   654 ·   15s   656
+     18s   658 ·   19s   660 ·   24s   664 ·   26s   665 ·   30s   855 ·   31s  1204 ·   45s  1211 ·   47s  1219
+     49s  1215 ·   51s  1211 ·   55s   799 ·   57s   820 ·   58s   304 ·   60s   300 ·   64s   290 ·   66s  1156
+     67s  1442 ·   68s  1438 ·   71s  1434 ·   74s   447 ·   75s   436 ·   76s   688 ·   77s   599 ·   79s   595
+     80s   600 ·   81s   608 ·   82s  1650 ·   84s  1474 ·   85s  1470 ·   89s  1466 ·   90s  1151 ·   91s   476
+     92s   472 ·   99s   450
+
+[auto=tiles]
+== Tile budget (BURN-36) ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+MAX_TEXTURE_SIZE 16384 · MAX_RENDERBUFFER_SIZE 16384
+gl error before: 0 · budget 768 MiB · tile side now 6882 · resident 0 MiB
+
+-- pool step: pool alone --
+   2048² pool    68 MiB · resident    68 MiB · ok 12.2 ms
+   3072² pool   153 MiB · resident   153 MiB · ok 32.2 ms
+   4096² pool   272 MiB · resident   272 MiB · ok 43.7 ms
+   4608² pool   344 MiB · resident   344 MiB · ok 53.3 ms
+   5120² pool   425 MiB · resident   425 MiB · ok 82.3 ms
+   5632² pool   514 MiB · resident   514 MiB · ok 78.1 ms
+   6016² pool   587 MiB · resident   587 MiB · ok 112.5 ms
+   6400² pool   664 MiB · resident   664 MiB · ok 81.9 ms
+   6711² pool   730 MiB · resident   730 MiB · ok 117.0 ms
+   7168² pool   833 MiB · resident   833 MiB · ok 100.6 ms
+   7680² pool   956 MiB · resident   956 MiB · ok 151.0 ms
+   8192² pool  1088 MiB · resident  1088 MiB · ok 165.8 ms
+   8704² pool  1228 MiB · resident  1228 MiB · ok 177.0 ms
+   9000² pool  1313 MiB · resident  1313 MiB · ok 208.2 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+-- pool step: beside a 4096² overview (the burn view) --
+overview 4096² resident: 443 MiB
+   2048² pool    68 MiB · resident   511 MiB · ok 307.1 ms
+   3072² pool   153 MiB · resident   596 MiB · ok 17.4 ms
+   4096² pool   272 MiB · resident   715 MiB · ok 25.2 ms
+   4608² pool   344 MiB · resident   787 MiB · ok 34.4 ms
+   5120² pool   425 MiB · resident   868 MiB · ok 80.8 ms
+   5632² pool   514 MiB · resident   957 MiB · ok 78.5 ms
+   6016² pool   587 MiB · resident  1029 MiB · ok 97.1 ms
+   6400² pool   664 MiB · resident  1107 MiB · ok 93.5 ms
+   6711² pool   730 MiB · resident  1173 MiB · ok 118.3 ms
+   7168² pool   833 MiB · resident  1276 MiB · ok 96.2 ms
+   7680² pool   956 MiB · resident  1399 MiB · ok 144.3 ms
+   8192² pool  1088 MiB · resident  1531 MiB · ok 176.7 ms
+   8704² pool  1228 MiB · resident  1671 MiB · ok 193.4 ms
+   9000² pool  1313 MiB · resident  1756 MiB · ok 208.3 ms
+  largest pool that allocated: 9000² (1313 MiB)
+
+suggested GPU budget: ~1756 MiB (largest pool beside the overview, plus the overview)
+
+-- 5 µm 100 mm job, planned with GlSim.fit() --
+samples 19,688,836 · grid 20012 × 20040 · tiles 5 × 5 (padded ≤ 4048) · resident before the pool 341 MiB
+first 15587.8 ms · second 9257.9 ms · ran 25 tiles (padded ≤ 4048) · replanned false · failed sides none
+resident after: 638 MiB · context lost: false
+
+-- forced allocation failure: spike job, pools over 2048² refused --
+setup tile 6020 → ran 9 tiles ≤ 2027 · failed 6020, 4256 · learned cap 3009
+  after fallback expected 1.4555e+3 J
+    after deposit 1.4555e+3 (1.0000) PASS
+    after blur H  1.4555e+3 (1.0000) PASS
+    after blur V  1.4555e+3 (1.0000) PASS
+
+-- context loss and recovery (WEBGL_lose_context) --
+webglcontextlost: waiting for restore
+webglcontextrestored: rebuilt GlSim (tile side cap 9000)
+lost event true · run on lost context threw GlContextLostError · restored true · re-run after rebuild true · losses seen 1
+
+PASS  5 µm job renders without context loss
+PASS  forced failure falls back to smaller tiles
+PASS  context loss recovers
+gl error: 0
+[auto=stages]
+== Upload stages (BURN-36): 5 µm 100 mm job, one GPU step at a time ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+gl error before: 0 · budget 768 MiB
+Each line: wall time incl. CPU work, finish + 1-pixel readback · resident after · gl error · context lost
+SLOW marks steps over 1.8 s of wall time; Windows resets the GPU when one GPU command runs past ~2 s (TDR),
+so a slow step that then loses the context is the suspect. Check Event Viewer for display event 4101.
+samples 19,688,836 (225 MiB xye) · CPU sampler 3494.4 ms · store 1656.4 ms
+
+-- fluence only (no thermal step) --
+  1. first sample window                80.1 ms · resident    34 MiB · gl error 0 · lost false
+  2. thermal step                        0.2 ms · resident    34 MiB · gl error 0 · lost false
+  3. bins (CPU; GPU window)           1291.2 ms · resident    34 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     3.1 ms · resident   476 MiB · gl error 0 · lost false
+  5. tile pool 1024²                    10.4 ms · resident   493 MiB · gl error 0 · lost false
+  6. one 1024² region run              104.2 ms · resident   518 MiB · gl error 0 · lost false
+  7. full run, 36 tiles ≤ 3380        7586.9 ms · resident   685 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+-- birch with the thermal step --
+  1. first sample window                44.8 ms · resident    34 MiB · gl error 0 · lost false
+  2. thermal step                     7650.3 ms · resident   240 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+  3. bins (CPU; GPU window)           1048.0 ms · resident   240 MiB · gl error 0 · lost false
+  4. overview 4096² (burn view size)     2.3 ms · resident   682 MiB · gl error 0 · lost false
+  5. tile pool 1024²                     5.9 ms · resident   699 MiB · gl error 0 · lost false
+  6. one 1024² region run               56.1 ms · resident   732 MiB · gl error 0 · lost false
+  7. full run, 144 tiles ≤ 1710       7143.1 ms · resident   762 MiB · gl error 0 · lost false · SLOW (> 1.8 s wall)
+
+fluence only (no thermal step): all steps ok
+birch with the thermal step: all steps ok
+gl error: 0

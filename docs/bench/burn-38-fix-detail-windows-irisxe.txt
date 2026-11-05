@@ -1,0 +1,175 @@
+BURN-38 fix, rerun of BURN-41 (?auto=detail) in WebView2 (Aria Burn app) and Edge on Windows / Intel Iris Xe, run 2026-11-05.
+Windows 11 Home 26H2 (10.0.26300.9818) · Edge and WebView2 Runtime 156.0.4314.58 · Intel Iris Xe (0x9A49), driver
+30.0.101.1191, ANGLE / Direct3D 11 · 16 GB RAM, on AC power · all binaries x64.
+aria-burn-core burn-38 at a1a9853 (the fix; same sim code as the commit that lands on main) · aria-burn main 9232a1a
+(debug build, unchanged). Bench server `npx vite bench --port 5299 --strictPort` on the laptop. Each run is a fresh
+process started on the logged-in desktop (one-shot interactive scheduled task, C:\Users\gusta\src\_claude\winrun.ps1)
+with a 1 Hz sampler of "\GPU Process Memory(*)\Shared Usage" for the browser GPU process (mem2.ps1). The laptop's
+Claude app and WSL (~11 GB) stayed open; free RAM before each run is given. No build, test or other bench ran.
+Edge: fresh profile C:\temp\edge-burn41, --new-window http://localhost:5299/?auto=detail.
+
+Result: PASS in WebView2 and Edge (runs below, on a quiet laptop). Before the fix (burn-41-detail-*-windows-irisxe.txt)
+WebView2 never got past fit (context lost in the thermal step, 4 of 4) and Edge failed "after releaseTargets < 2 s"
+(7.0-8.0 s).
+                                           WebView2      Edge (1)      Edge (2)      before: Edge
+  fit (thermal step + whole-job bins)      4191 ms       5972 ms       6615 ms       15825-41417 ms
+  full run (4 × 4 tiles, 15 µm, k = 3)     1335 ms       1875 ms       1669 ms       6608-7902 ms (7 × 7)
+  first detail, app sequence (< 2 s)       116 ms PASS   150 ms PASS   163 ms PASS   838-1156 ms PASS
+  pans ×5 / far pans ×3, median            27 / 42 ms    31 / 61 ms    31 / 59 ms    96-116 / 123-173 ms
+  first detail after releaseTargets (< 2 s) 871 ms PASS  1426 ms PASS  1601 ms PASS  6994-7982 ms FAIL
+  window vs whole-job bins, bit for bit    identical     identical     identical     identical
+  GPU process peak                         1902 MiB      1801 MiB      1941 MiB      WebView2 lost at 2374 MiB
+The peak readings come after the full run (~1.5 GB at that point), across the detail runs and the bench's
+releaseTargets-then-reload steps, where old memory is freed seconds late while the new is allocated; 1 Hz
+sampling doesn't separate those.
+
+An earlier pair at the same commit ran while the laptop was busy for a few minutes (BURN-38 run 3 slowed down the
+same way): both passed the app sequence with no context loss, WebView2 also passed after releaseTargets
+(1829 ms), Edge did not (2911 ms; fit 12068 / 11306 ms). They are kept at the end of this file.
+
+=== WebView2, ?auto=detail, fresh process (6626 MB RAM free before) ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 1902 at 12 s; least RAM free 1627 MiB
+      0s    16 ·    4s    46 ·    5s   819 ·    6s  1229 ·    7s  1236 ·    8s  1241 ·    9s  1391 ·   10s  1539
+     11s  1878 ·   12s  1902 ·   13s   552 ·   14s   759 ·   16s   757 ·   17s   606 ·   18s   753 ·   21s   602
+     22s   752 ·   25s   602 ·   26s   752 ·   28s   640 ·   29s  1095 ·   31s   697 ·   32s  1129 ·   33s  1000
+     34s  1006
+
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 4 × 4 · fit 4191.1 ms (thermal step + whole-job bins: multi-tile plan) · full run 1334.8 ms
+app sequence: first detail 115.5 ms (whole-job bins from fit) · pans ×5 (37 cells) min 26.2 ms / median 26.9 ms / max 27.4 ms · far pans ×3 (1920 cells) min 40.0 ms / median 42.1 ms / max 42.6 ms
+after releaseTargets (BURN-37 bench sequence): first detail 871.4 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 1232.8 ms = thermal re-upload 642.1 ms + whole-job bins 472.1 ms + run 118.6 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (50 M): first detail run, app sequence < 2 s
+PASS budget this GPU's default (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
+=== Edge (1), ?auto=detail, fresh process (6643 MB RAM free before) ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 1801 at 12 s; least RAM free 1494 MiB
+      0s    16 ·    4s    71 ·    5s  1529 ·    6s  1242 ·    7s  1248 ·    8s  1253 ·    9s  1249 ·   11s  1399
+     12s  1801 ·   13s  1329 ·   14s  1692 ·   15s  1496 ·   16s  1669 ·   17s  1153 ·   18s   765 ·   19s   757
+     20s   761 ·   21s  1216 ·   22s   759 ·   25s  1175 ·   26s   758 ·   29s   608 ·   30s  1213 ·   31s   758
+     33s   608 ·   34s   703 ·   35s   552 ·   36s  1005 ·   37s  1011 ·   41s   610 ·   42s   611 ·   43s   567
+
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 4 × 4 · fit 5971.8 ms (thermal step + whole-job bins: multi-tile plan) · full run 1874.9 ms
+app sequence: first detail 150.1 ms (whole-job bins from fit) · pans ×5 (37 cells) min 30.5 ms / median 31.4 ms / max 34.0 ms · far pans ×3 (1920 cells) min 59.3 ms / median 60.5 ms / max 61.5 ms
+after releaseTargets (BURN-37 bench sequence): first detail 1426.1 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 2004.4 ms = thermal re-upload 1136.4 ms + whole-job bins 732.9 ms + run 135.1 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (50 M): first detail run, app sequence < 2 s
+PASS budget this GPU's default (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
+=== Edge (2), ?auto=detail, fresh process (6663 MB RAM free before) ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 1941 at 14 s; least RAM free 1769 MiB
+      0s    16 ·    4s    59 ·    5s   823 ·    7s  1236 ·    8s  1239 ·    9s  1246 ·   10s  1244 ·   11s  1393
+     13s  1335 ·   14s  1941 ·   15s  1497 ·   16s  1905 ·   17s   555 ·   18s   763 ·   19s   755 ·   20s   759
+     21s   609 ·   22s   757 ·   25s   606 ·   26s   756 ·   30s  1211 ·   31s   756 ·   33s   605 ·   34s   694
+     35s   543 ·   36s   997 ·   37s  1002
+
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 4 × 4 · fit 6615.2 ms (thermal step + whole-job bins: multi-tile plan) · full run 1668.8 ms
+app sequence: first detail 162.9 ms (whole-job bins from fit) · pans ×5 (37 cells) min 29.6 ms / median 31.2 ms / max 31.9 ms · far pans ×3 (1920 cells) min 58.1 ms / median 59.3 ms / max 59.8 ms
+after releaseTargets (BURN-37 bench sequence): first detail 1601.4 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 2021.8 ms = thermal re-upload 1126.7 ms + whole-job bins 764.8 ms + run 130.3 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (50 M): first detail run, app sequence < 2 s
+PASS budget this GPU's default (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
+=== earlier, laptop busy: WebView2, ?auto=detail ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 1974 at 31 s; least RAM free 1019 MiB
+      0s    16 ·    8s    53 ·    9s    49 ·   12s  1496 ·   13s  1509 ·   18s  1240 ·   19s  1234 ·   20s  1236
+     22s  1240 ·   25s  1390 ·   27s  1533 ·   28s  1471 ·   29s  1297 ·   30s  1848 ·   31s  1974 ·   32s  1782
+     33s   436 ·   34s   759 ·   35s   755 ·   37s   604 ·   38s   960 ·   40s   751 ·   44s   600 ·   45s   750
+     48s   600 ·   49s   750 ·   52s   600 ·   53s   695 ·   54s   544 ·   55s   998 ·   56s  1004
+
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 4 × 4 · fit 12068.2 ms (thermal step + whole-job bins: multi-tile plan) · full run 2701.7 ms
+app sequence: first detail 268.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 44.8 ms / median 47.2 ms / max 99.7 ms · far pans ×3 (1920 cells) min 127.3 ms / median 130.2 ms / max 131.9 ms
+after releaseTargets (BURN-37 bench sequence): first detail 1829.4 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 2096.1 ms = thermal re-upload 1056.9 ms + whole-job bins 888.1 ms + run 151.1 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (50 M): first detail run, app sequence < 2 s
+PASS budget this GPU's default (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
+=== earlier, laptop busy: Edge, ?auto=detail ===
+  WebView2/Edge GPU process shared GPU memory (MiB), 1 Hz, readings that changed; peak 1916 at 22 s; least RAM free 1374 MiB
+      0s    16 ·    4s    71 ·    5s  1529 ·    6s  1515 ·    7s   835 ·    8s  1246 ·    9s  1244 ·   10s  1245
+     13s  1249 ·   14s  1250 ·   16s  1399 ·   19s  1778 ·   20s  1330 ·   21s  1310 ·   22s  1916 ·   23s  1496
+     24s  1904 ·   25s   555 ·   26s  1160 ·   27s   758 ·   28s   762 ·   29s   611 ·   30s  1217 ·   31s   759
+     34s  1070 ·   35s   758 ·   37s   608 ·   38s   758 ·   41s   608 ·   42s   703 ·   43s   552 ·   44s  1006
+     45s  1011 ·   48s   787 ·   50s   494 ·   51s   451
+
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 4 × 4 · fit 11306.3 ms (thermal step + whole-job bins: multi-tile plan) · full run 2734.3 ms
+app sequence: first detail 231.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 36.6 ms / median 36.9 ms / max 40.8 ms · far pans ×3 (1920 cells) min 67.4 ms / median 69.1 ms / max 73.1 ms
+after releaseTargets (BURN-37 bench sequence): first detail 2910.9 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 2248.5 ms = thermal re-upload 1009.1 ms + whole-job bins 956.4 ms + run 283.0 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (50 M): first detail run, app sequence < 2 s
+FAIL budget this GPU's default (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins

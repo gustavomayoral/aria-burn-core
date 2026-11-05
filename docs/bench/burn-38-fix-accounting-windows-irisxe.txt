@@ -1,0 +1,142 @@
+BURN-38: where the WebView2 GPU process's memory went, and the fix. Windows / Intel Iris Xe, run 2026-11-05.
+Windows 11 Home 26H2 (10.0.26300.9818) · WebView2 Runtime and Edge 156.0.4314.58 · Iris Xe (0x9A49), driver
+30.0.101.1191, ANGLE / Direct3D 11 · 16 GB RAM, on AC power. aria-burn main 9232a1a (debug build, unchanged).
+Bench: ?auto=gpumem (bench/bench.ts runGpuMem, new in BURN-38) in a fresh aria-burn (WebView2) process each run.
+Each step allocates or frees one thing, then waits 3-4 s; it POSTs a mark to the bench server, which logs it with
+the laptop's clock. A sampler on the laptop read "\GPU Process Memory(*)\Shared Usage" for the browser GPU
+process (msedgewebview2.exe) once a second. "at rest" = the last reading before the next step; "peak" = the
+highest reading while the step ran. "ledger" = what the core's BURN-36 GPU byte ledger counted. MiB throughout.
+6.5-7.8 GB RAM free before every run (the laptop's Claude app and WSL stay open, ~11 GB).
+
+SUMMARY
+- The GPU byte budget (BURN-36) counted textures and buffers at their size. On ANGLE / D3D11 that is right for
+  textures and wrong for vertex buffers, and the per-sample buffers are the big ones (19.7 M samples for the 5 µm
+  100 mm job: samples 225, bins 300, thermal statics 225):
+    STATIC_DRAW vertex buffer  2x its size once drawn from (ANGLE keeps a staging copy beside the GPU buffer)
+    DYNAMIC_DRAW vertex buffer not bound directly: each draw streams the range it reads into a streaming buffer
+                               that the driver renames under load. The thermal step (~3000 draws over all 19.7 M
+                               samples and their statics) took the process ~1.1 GB above its resting size.
+    texture                    1x at rest; ~2x for a moment on first use (WebGL zero-initialises it)
+    any free                   returned seconds later, not at once
+- The 5 µm job's app sequence (thermal step, bins, overview, full run) took the WebView2 GPU process to
+  2.4-3.2 GB while the ledger counted 0.4-1.1 GB. The earlier runs lost the context there.
+- Fix (aria-burn-core burn-38): per-sample vertex data goes through bounded vertex windows
+  (src/sim/gl/vertex-window.ts): one STATIC_DRAW buffer of up to 2 M items per array, refilled from the CPU
+  array as draws walk it (bins by bucket row, the thermal step by time bin, coarse runs by checkpoint). The
+  thermal step no longer keeps a whole-job statics buffer. Windows are used on ANGLE / Direct3D and on Intel
+  renderers; elsewhere (M1) samples and bins stay whole buffers as before. The overview is cleared when it is
+  allocated, so its first-use spike lands before the run's other data is on the GPU. Results are unchanged bit
+  for bit (burn-38-fix-macos-m1.txt).
+- After the fix the same sequence peaks at 1.25-1.4 GB at rest, ~1.8 GB for a moment (the overview's first
+  use, at the start of fit), with the thermal step at 476.
+
+THE 5 µm JOB, STEP BY STEP (WebView2)
+Before the fix (main sim code, buffer usages as shipped):
+  step                                                        ledger  at rest   peak
+  baseline                                                         0       51     55
+  job sampled (CPU only)                                           0       51     55
+  samples uploaded                                               225       50     50
+  thermal step done                                              383     1298   2374
+  whole-job bins uploaded                                        684     1298   1298
+  overview resized                                              1126     1298   1298
+  fit: 441 tiles ≤ 995                                          1126     1298   1298
+  one 1000² region run                                          1143     1934   1934
+  full run done                                                 1143     2773   2773
+  overview disposed, releaseTargets                              225     1748   1748
+The first accounting run (same code, after the buffer probes below, settle 4 s) lost the context in the full run
+at 3233 MiB with 529 MiB RAM free (the probes' memory was still held):
+  step                                                        ledger  at rest   peak
+  samples uploaded                                               225      961    961
+  thermal step done                                              383     1756   2888
+  whole-job bins uploaded                                        684     1756   1756
+  overview resized                                              1126     1756   1756
+  fit: 441 tiles ≤ 995                                          1126     1756   1756
+  full run done (context lost, GPU process restarted)           1142      207   3233
+  overview disposed, releaseTargets                                0      207    207
+
+Experiment: every buffer over 16 MiB forced to STATIC_DRAW (?usage=static). The thermal step's transient goes
+(1299 peak), but the bins cost 2x once drawn (region run +637) and the full run still reaches 2774:
+  step                                                        ledger  at rest   peak
+  baseline                                                         0       51     55
+  job sampled (CPU only)                                           0       51     55
+  samples uploaded                                               225       51     51
+  thermal step done                                              383     1298   1299
+  whole-job bins uploaded                                        684     1298   1298
+  overview resized                                              1126     1298   1298
+  fit: 441 tiles ≤ 995                                          1126     1298   1298
+  one 1000² region run                                          1143     1935   1935
+  full run done                                                 1143     2774   2774
+  overview disposed, releaseTargets                              225     1749   1749
+
+Experiment: every buffer over 16 MiB forced to DYNAMIC_DRAW (?usage=dynamic). Bins look cheap here only because
+the full run reuses the streaming buffer the thermal step grew (2374 peak); with the thermal step windowed
+(burn-38 at 8becd70, bins still DYNAMIC_DRAW) the full run alone went 460 -> 2438:
+  step                                                        ledger  at rest   peak
+  baseline                                                         0       51     55
+  job sampled (CPU only)                                           0       51     55
+  samples uploaded                                               225       50     50
+  thermal step done                                              383     1298   2374
+  whole-job bins uploaded                                        684     1298   1298
+  overview resized                                              1126     1298   1298
+  fit: 441 tiles ≤ 995                                          1126     1298   1298
+  one 1000² region run                                          1143     1332   1332
+  full run done                                                 1143     2171   2171
+  overview disposed, releaseTargets                              225     1146   1146
+
+After the fix (burn-38 a1a9853, the committed code; ?auto=gpumem&parts=job&settle=3000):
+  step                                                        ledger  at rest   peak
+  baseline                                                         0       51     55
+  job sampled (CPU only)                                           0       51     55
+  samples uploaded                                                24       50     50
+  thermal step done                                              230      476    476
+  whole-job bins uploaded                                        230      476    476
+  overview resized                                               672     1250   1250
+  fit: 121 tiles ≤ 1862                                          672     1250   1250
+  one 1000² region run                                           722     1348   1348
+  full run done                                                  760     1417   1417
+  overview disposed, releaseTargets                                0      408    408
+  (one reading at 1837 during "overview resized": the overview's zero-initialisation, now at allocation)
+
+COST MODEL (?auto=gpumem&parts=cost): one allocation per step, nothing freed until the end, so each increase is
+that step's own cost. 19,688,836 samples = 225 MiB of (x, y, E); the RG32F texture is the per-sample energies.
+  step                                                        ledger  at rest   peak
+  baseline                                                         0       51     56
+  overview 4091x4096 allocated (442 MiB by the ledger)           442       51     55
+  overview rendered to (cleared)                                 442      825    825
+  overview mips generated                                        442      827    827
+  RG32F 4096x4807 (150 MiB) rendered to                          442      979    979
+  A STATIC bufferData(data) 225 MiB, uploaded                    442      979    979
+  A drawn once (whole)                                           442     1433   1437
+  A drawn instanced in 1000 offset chunks                        442     1437   1437
+  B STATIC bufferData(size)+bufferSubData 225 MiB, drawn in      442     1889   1889
+  B half re-uploaded with bufferSubData, drawn                   442     1889   1889
+  C DYNAMIC bufferData(data) 225 MiB, drawn in 1000 chunks       442     2139   2139
+  C drawn once (whole)                                           442     2339   2339
+  D DYNAMIC 225 MiB #2, drawn instanced in 1000 chunks           442     2339   2339
+  E STATIC UINT32 75 MiB integer attribute, drawn instanced      442     2339   2339
+  F STATIC 225 MiB #3 drawn                                      442     2791   2791
+  F emptied with bufferData(0)                                   442     2791   2791
+  F deleted                                                      442     2791   2791
+  A-E deleted                                                    442     1888   1888
+  overview and RG32F deleted                                       0      962    962
+  The RG32F texture read 1282 for one sample right after it was first rendered to (zero-initialisation), then 979.
+  Reading the steps: overview (442 by the ledger) +774 at first use (four attachments, three with mip chains);
+  RG32F 150 MiB +152; STATIC_DRAW 225 MiB +0 at upload, +458 at the first draw, nothing more for later draws;
+  same via bufferSubData +452; DYNAMIC_DRAW +250 drawn in 1000 chunks, +204 more drawn whole (the streaming
+  buffer grows to the largest draw), a second DYNAMIC buffer +0 (it reuses the streaming buffer); bufferData(0)
+  and deleteBuffer free nothing at once (2791 stays); the frees arrive a few seconds later (-903, -926, -452).
+
+WHAT THE BUDGET NOW SEES
+The ledger counts the windows (24 MiB samples, 24 + 8 MiB bins, 24 + 24 MiB thermal step on Iris Xe) instead of
+225 + 300 + 225 MiB of whole buffers. fit plans its tiles with what is really resident, so on Iris Xe the 5 µm
+job (k = 1) now runs 121 tiles <= 1862 instead of 441 tiles <= 995 at the same 768 MiB budget.
+
+WHAT IS LEFT
+- The overview costs ~1.75x its ledger size once used (774 vs 442), and any big texture briefly ~2x on first
+  use. Not counted by the ledger; with the per-sample data windowed it no longer matters for the 5 µm job.
+- releaseTargets() followed at once by new allocations (the BURN-37 bench sequence in ?auto=detail) overlaps
+  the old memory, which is freed seconds late, with the new: ~1.9-2.0 GB for a moment. The app releases on job
+  close, before a new job is sampled, so its frees land first.
+
+Raw data (CSV per run, bench server log) are in the BURN-38 session notes on the Mac; the sampler and launch
+scripts are in C:\Users\gusta\src\_claude on the laptop (mem2.ps1, winrun.ps1).
