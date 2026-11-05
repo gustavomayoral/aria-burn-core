@@ -743,9 +743,9 @@ async function runStages(): Promise<void> {
       return ok
     }
     const steps: [string, () => void][] = [
-      ['1. upload samples (skipped if on GPU)', () => sim.syncSamples(job.store)],
+      ['1. first sample window', () => sim.syncSamples(job.store)],
       ['2. thermal step', () => void sim.thermal(job.store, setup)],
-      ['3. upload bins (bufferData)', () => void sim.ensureBins(job.store, setup)],
+      ['3. bins (CPU; GPU window)', () => void sim.ensureBins(job.store, setup)],
       ['4. overview 4096² (burn view size)', () => big.resize(setup.grid.width, setup.grid.height)],
       ['5. tile pool 1024²', () => void sim.probePool(1024)],
       ['6. one 1024² region run', () => void sim.run(job.store, setup, { region: { x: 9500, y: 9500, width: 1000, height: 1000 } })],
