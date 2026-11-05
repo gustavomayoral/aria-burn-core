@@ -79,8 +79,6 @@ type Rect = [x0: number, y0: number, x1: number, y1: number]
 /** Spare capacity for per-sample buffers of a live run (BURN-35): regrowing them re-uploads everything. */
 const LIVE_HEADROOM = 1.25
 
-/** Floats per sample in the vertex window: x, y, energy, then flash factor, bulk gain, bin fraction. */
-const CHUNK_STRIDE = 6
 
 /**
  * The GPU step's state between calls (BURN-35): the textures of the last run
@@ -139,9 +137,13 @@ export class GlPeakTemperatureStep implements ThermalStep {
   private readonly gather: Program
   private readonly vao: WebGLVertexArrayObject
   private readonly emptyVao: WebGLVertexArrayObject
-  /** Samples on the GPU a window at a time: interleaved (x, y, E, flash, bulk gain, bin fraction) by store index. */
+  /**
+   * Samples on the GPU a window at a time, by store index: (x, y, E) and the statics (flash, bulk gain,
+   * bin fraction), two windows always held over the same range (plain copies of the CPU arrays).
+   */
   private readonly window: VertexWindow
-  /** Bumped whenever the statics behind the window change (every advance). */
+  private readonly staticsWindow: VertexWindow
+  /** Bumped whenever the statics behind the windows change (every advance). */
   private windowVersion = 0
   private readonly tapTextures = new Map<string, WebGLTexture>()
   private owned: WebGLTexture[] = []
@@ -159,13 +161,15 @@ export class GlPeakTemperatureStep implements ThermalStep {
     this.bulkProgram = new Program(gl, THERMAL_BULK_VS, THERMAL_BULK_FS)
     this.vao = gl.createVertexArray()!
     this.emptyVao = gl.createVertexArray()!
-    this.window = new VertexWindow(gl, CHUNK_STRIDE * 4)
+    this.window = new VertexWindow(gl, 12)
+    this.staticsWindow = new VertexWindow(gl, 12)
     gl.bindVertexArray(this.vao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.window.buffer)
     gl.enableVertexAttribArray(0)
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, 0)
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.staticsWindow.buffer)
     gl.enableVertexAttribArray(1)
-    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, 12)
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 12, 0)
     gl.bindVertexArray(null)
   }
 
@@ -181,6 +185,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
     this.current = null
     this.resume = null
     this.window.release()
+    this.staticsWindow.release()
   }
 
   /**
@@ -188,18 +193,15 @@ export class GlPeakTemperatureStep implements ThermalStep {
    * they aren't all there) and return the store index of its first sample.
    */
   private chunk(store: SampleStore, statics: Float32Array, lo: number, hi: number): number {
-    return this.window.hold(this, this.windowVersion, lo, hi, store.count, (dst, from, to) => {
-      const out = new Float32Array(dst, 0, (to - from) * CHUNK_STRIDE)
-      const { xye } = store
-      for (let i = from, o = 0; i < to; i++, o += CHUNK_STRIDE) {
-        out[o] = xye[i * 3]!
-        out[o + 1] = xye[i * 3 + 1]!
-        out[o + 2] = xye[i * 3 + 2]!
-        out[o + 3] = statics[i * 3]!
-        out[o + 4] = statics[i * 3 + 1]!
-        out[o + 5] = statics[i * 3 + 2]!
-      }
-    })
+    const statics0 = this.staticsWindow.hold(this, this.windowVersion, lo, hi, store.count, (dst, from, to) =>
+      new Float32Array(dst, 0, (to - from) * 3).set(statics.subarray(from * 3, to * 3)),
+    )
+    const base = this.window.hold(this, this.windowVersion, lo, hi, store.count, (dst, from, to) =>
+      new Float32Array(dst, 0, (to - from) * 3).set(store.xye.subarray(from * 3, to * 3)),
+    )
+    // Same calls, same capacity: always the same range (draws offset both attributes by one first vertex).
+    if (base !== statics0 || this.window.to !== this.staticsWindow.to) throw new Error('GlPeakTemperatureStep: vertex windows out of step')
+    return base
   }
 
   private taps(alpha: number, dt: number, pitch: number): { tex: WebGLTexture; radius: number } {
@@ -535,7 +537,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
       // Instanced: the sample attribute steps per instance, from `first` (chunk-relative offset).
       gl.bindVertexArray(this.vao)
       gl.bindBuffer(gl.ARRAY_BUFFER, this.window.buffer)
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, (first - base) * CHUNK_STRIDE * 4)
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, (first - base) * 12)
       gl.vertexAttribDivisor(0, 1)
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, perSample.tex)
@@ -545,7 +547,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
         .f('u_layerScale', layerScale[0]!, layerScale[1]!, layerScale[2]!, layerScale[3]!)
         .f('u_invArea', 1 / area)
       gl.drawArraysInstanced(gl.POINTS, 0, 4, count)
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, 0)
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0)
       gl.vertexAttribDivisor(0, 0)
       gl.disable(gl.BLEND)
       gl.bindVertexArray(this.emptyVao)

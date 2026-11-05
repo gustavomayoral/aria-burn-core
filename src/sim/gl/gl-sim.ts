@@ -354,8 +354,12 @@ export class GlSim {
   private readonly sampleVao: WebGLVertexArrayObject
   /** The store's samples (x, y, E) on the GPU a window at a time, in store order (BURN-38). */
   private readonly sampleWindow: VertexWindow
-  /** Bins (x, y, E, store index) on the GPU a window at a time: whole-job or window bins, whichever is drawn. */
+  /**
+   * Bins on the GPU a window at a time, whole-job or window bins, whichever is drawn: (x, y, E) and the
+   * store index in two windows held in step (same items), the layout the deposit had as whole buffers.
+   */
   private readonly binWindow: VertexWindow
+  private readonly binIndexWindow: VertexWindow
   private readonly pools = new Map<'full' | 'coarse', TargetSet>()
   private readonly weightTextures = new Map<string, WebGLTexture>()
   private readonly reduceTargets = new Map<string, Target>()
@@ -432,7 +436,8 @@ export class GlSim {
     // Bounded windows where whole per-sample buffers cost the GPU process too much (BURN-38); whole arrays elsewhere.
     const whole = !(options.windowedVertexData ?? windowedVertexData(this.caps.renderer))
     this.sampleWindow = new VertexWindow(gl, 12, whole)
-    this.binWindow = new VertexWindow(gl, 16, whole)
+    this.binWindow = new VertexWindow(gl, 12, whole)
+    this.binIndexWindow = new VertexWindow(gl, 4, whole)
     gl.bindVertexArray(this.sampleVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleWindow.buffer)
     gl.enableVertexAttribArray(0)
@@ -515,19 +520,18 @@ export class GlSim {
     )
   }
 
-  /** Hold bins [lo, hi) in the bin window, interleaved (x, y, E, store index); returns the first bin held. */
+  /** Hold bins [lo, hi) in the xye bin window; returns the first bin held (the window stays bound). */
   private holdBins(bins: SampleBins, lo: number, hi: number): number {
-    return this.binWindow.hold(bins, bins.version, lo, hi, bins.count, (dst, from, to) => {
-      const f = new Float32Array(dst, 0, (to - from) * 4)
-      const u = new Uint32Array(dst, 0, (to - from) * 4)
-      const { xye, index } = bins
-      for (let i = from, o = 0; i < to; i++, o += 4) {
-        f[o] = xye[i * 3]!
-        f[o + 1] = xye[i * 3 + 1]!
-        f[o + 2] = xye[i * 3 + 2]!
-        u[o + 3] = index[i]!
-      }
-    })
+    return this.binWindow.hold(bins, bins.version, lo, hi, bins.count, (dst, from, to) =>
+      new Float32Array(dst, 0, (to - from) * 3).set(bins.xye.subarray(from * 3, to * 3)),
+    )
+  }
+
+  /** Hold the store indices of bins [lo, hi) in the index window; returns the first bin it holds (stays bound). */
+  private holdBinIndex(bins: SampleBins, lo: number, hi: number): number {
+    return this.binIndexWindow.hold(bins, bins.version, lo, hi, bins.count, (dst, from, to) =>
+      new Uint32Array(dst, 0, to - from).set(bins.index.subarray(from, to)),
+    )
   }
 
   private pool(kind: 'full' | 'coarse', w: number, h: number): TargetSet {
@@ -557,7 +561,7 @@ export class GlSim {
     const full = this.pools.get('full')
     let other = ledger(this.gl).total - (full?.bytes ?? 0)
     // Samples and bins: a bounded window each (BURN-38), or the whole arrays where they aren't windowed.
-    if (store) other += this.sampleWindow.pendingBytes(store.count) + this.binWindow.pendingBytes(store.count)
+    if (store) other += this.sampleWindow.pendingBytes(store.count) + this.binWindow.pendingBytes(store.count) + this.binIndexWindow.pendingBytes(store.count)
     return tileSide({ budgetBytes: this.gpuBudgetBytes, otherBytes: other, maxSide: Math.min(this.maxTileSide, this.caps.maxTextureSize) })
   }
 
@@ -617,6 +621,7 @@ export class GlSim {
     this.dropWindowBins()
     this.sampleWindow.release()
     this.binWindow.release()
+    this.binIndexWindow.release()
   }
 
   private dropWindowBins(): void {
@@ -669,17 +674,21 @@ export class GlSim {
   private drawSamples(store: SampleStore, first: number, count: number, bins: SampleBins | null = null): void {
     if (count <= 0) return
     const gl = this.gl
-    const stride = bins ? 16 : 12
+    const withIndex = !!bins && !!this.active
     gl.bindVertexArray(this.sampleVao)
     for (let i = first, end = first + count; i < end; ) {
+      // The thermal deposit reads each bin's store index too; the two windows may hold different ranges.
+      const indexBase = withIndex ? this.holdBinIndex(bins!, i, i + 1) : 0
       const base = bins ? this.holdBins(bins, i, i + 1) : this.holdSamples(store, i, i + 1)
-      const to = Math.min(end, (bins ? this.binWindow : this.sampleWindow).to)
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, (i - base) * stride)
+      let to = Math.min(end, (bins ? this.binWindow : this.sampleWindow).to)
+      if (withIndex) to = Math.min(to, this.binIndexWindow.to)
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, (i - base) * 12)
       if (this.active) {
         this.depositThermal.i('u_first', i).i('u_binned', bins ? 1 : 0)
         if (bins) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexWindow.buffer)
           gl.enableVertexAttribArray(1)
-          gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, stride, (i - base) * stride + 12)
+          gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 4, (i - indexBase) * 4)
           gl.vertexAttribDivisor(1, 1)
         } else gl.disableVertexAttribArray(1)
       }
