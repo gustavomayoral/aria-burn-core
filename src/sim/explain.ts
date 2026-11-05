@@ -106,7 +106,7 @@ export interface OverburnCause {
   kind: CauseKind
   /** Fraction of the verdict quantity this cause accounts for (0–1; 1 for settings). */
   share: number
-  /** The verdict quantity without it (J/mm², or K for a temperature fire risk), and the verdict that would give. */
+  /** The verdict quantity without it (dose or fluence, J/mm²), and the verdict that would give (bulk temperature scaled along for a temperature fire risk). */
   withoutValue: number
   verdictWithout: Verdict
   /** Lines involved (slowed lines, overlapping lines, the top move), most first. */
