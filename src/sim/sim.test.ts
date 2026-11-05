@@ -259,7 +259,20 @@ describe('scan offset (BURN-48)', () => {
     expect(reverse).toBeGreaterThan(0)
   })
 
+  it('widens the job grid so shifted reverse lines are not clipped, and leaves it alone without an offset', () => {
+    const b = fill.burnBounds!
+    expect(setupJob(b, roundSpot, woodFluence).burnBounds).toBe(b)
+    expect(setupJob(b, shifted, woodFluence).burnBounds).toEqual({ ...b, minXMm: b.minXMm - 0.6 })
+    const negative = { ...roundSpot, scanOffsetMm: [{ feedMmPerMin: 3000, offsetMm: -0.4 }] }
+    expect(setupJob(b, negative, woodFluence).burnBounds).toEqual({ ...b, maxXMm: b.maxXMm + 0.4 })
+    const setup = setupJob(b, shifted, woodFluence)
+    const { store } = storeFor(fill, shifted)
+    const whole = { x: 0, y: 0, width: setup.grid.width, height: setup.grid.height }
+    expect(depositCpu(store, store.count, setup.grid, whole, woodFluence.absorption).clippedEnergyJ).toBeLessThan(1e-12)
+  })
+
   it('moves reverse-line deposits by the expected distance and leaves forward-line deposits in place', () => {
+    // The same grid for both runs, wide enough for the shifted lines.
     const bounds = { minXMm: 1, minYMm: 2, maxXMm: 11, maxYMm: 5 }
     const setup = setupJob(bounds, roundSpot, woodFluence)
     const g = setup.grid

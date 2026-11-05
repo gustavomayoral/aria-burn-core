@@ -13,6 +13,7 @@ import {
   planJobGrid,
   planLiveTiles,
   planTiles,
+  scanOffsetBounds,
   TILE_MAX_CELLS,
   type BoundsMm,
   type CellRect,
@@ -76,11 +77,13 @@ export interface SetupOptions {
 }
 
 export function setupJob(
-  burnBounds: BoundsMm,
+  jobBounds: BoundsMm,
   machine: MachineProfile,
   material: MaterialProfile,
   options: SetupOptions = {},
 ): SimSetup {
+  // Reverse scan lines land beside the programmed burn when the machine has a scan offset (BURN-48).
+  const burnBounds = scanOffsetBounds(jobBounds, machine.scanOffsetMm)
   const detailPitchMm = options.pitchMm ?? gridPitchMm(machine.spot)
   const kernel = kernelSigma(machine.spot, material.sigmaHeatMm)
   const tiling = options.tiling ?? 'regular'

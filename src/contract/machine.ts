@@ -176,6 +176,23 @@ export function isReverseScan(ux: number, uy: number): boolean {
   return ux < 0 && Math.abs(uy) <= Math.abs(ux) * Math.tan((SCAN_OFFSET_ANGLE_DEG * Math.PI) / 180)
 }
 
+/**
+ * Burn bounds widened for the scan offset (BURN-48): reverse lines move by
+ * -offset along X, so the largest positive offset extends the burn to the
+ * left and the most negative one to the right. The bounds themselves when
+ * there is no offset.
+ */
+export function scanOffsetBounds<B extends { minXMm: number; maxXMm: number }>(bounds: B, curve: readonly ScanOffsetPoint[] | undefined): B {
+  if (!curve?.length) return bounds
+  let left = 0
+  let right = 0
+  for (const p of curve) {
+    left = Math.max(left, p.offsetMm)
+    right = Math.max(right, -p.offsetMm)
+  }
+  return left === 0 && right === 0 ? bounds : { ...bounds, minXMm: bounds.minXMm - left, maxXMm: bounds.maxXMm + right }
+}
+
 /** Scan offset ordering rules shared by MachineProfile and MachineFrame. */
 export function checkScanOffset(c: readonly ScanOffsetPoint[] | undefined): string[] {
   const problems: string[] = []
