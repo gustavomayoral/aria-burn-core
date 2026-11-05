@@ -219,3 +219,35 @@ describe('incremental thermal step falls back to a full run (BURN-35)', () => {
     expect(maxDiff(r.eDose, new CpuPeakTemperatureStep().run(live.store, machine, wood, kernel).eDose)).toBe(0)
   })
 })
+
+describe('a job-grid pitch step mid-stream leaves the live thermal plan alone (BURN-42)', () => {
+  it('continues across k steps and still equals a full run, sample for sample', () => {
+    const fine = setupJob(job.burnBounds!, machine, wood)
+    const cellBudget = Math.ceil((fine.grid.width * fine.grid.height) / 6)
+    const live = new LiveJob(1, 'live', machine, wood, { cellBudget })
+    const step = new CpuPeakTemperatureStep()
+    let prevPitch = 0
+    let prevPlan: CpuThermalRun['plan'] | null = null
+    let steppedExtended = 0
+    let fed = 0
+    for (let c = 1; c <= 24; c++) {
+      for (; fed < Math.round((batches.length * c) / 24); fed++) live.onBatch(batches[fed]!)
+      const setup = live.setup()
+      if (!setup) continue
+      // The thermal kernel is the full-resolution one at every k.
+      expect(setup.thermalKernel).toEqual(kernel)
+      const inc = thermalFor(live.store, machine, wood, setup.thermalKernel, step, setup.thermalPlanning) as CpuThermalRun
+      const stepped = prevPitch > 0 && setup.grid.pitchMm > prevPitch
+      if (prevPlan) expect(lastThermalPath).toBe(sameThermalPlan(inc.plan!, prevPlan) ? 'extended' : 'full')
+      if (stepped && lastThermalPath === 'extended') steppedExtended++
+      const full = fullRun(live.store)
+      expect(maxDiff(inc.eAbs, full.eAbs)).toBe(0)
+      expect(maxDiff(inc.eDose, full.eDose)).toBe(0)
+      expect(maxDiff(inc.grid.state, full.grid.state)).toBe(0)
+      prevPitch = setup.grid.pitchMm
+      prevPlan = inc.plan!
+    }
+    expect(prevPitch / setupJob(job.burnBounds!, machine, wood, { cellBudget }).grid.pitchMm).toBe(1)
+    expect(steppedExtended).toBeGreaterThan(0)
+  }, 30_000)
+})

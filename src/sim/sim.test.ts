@@ -415,13 +415,48 @@ describe('job pitch under a cell budget (BURN-37)', () => {
     expect(c.angleDeg).toBe(k.angleDeg)
   })
 
-  it('live jobs size the pitch from the travel area, so it holds while the bounds grow', () => {
-    const small = setupJob({ minXMm: 10, minYMm: 10, maxXMm: 12, maxYMm: 11 }, machine, wood, { cellBudget: JOB_CELL_BUDGET, tiling: 'live' })
-    const big = setupJob({ minXMm: 5, minYMm: 10, maxXMm: 300, maxYMm: 250 }, machine, wood, { cellBudget: JOB_CELL_BUDGET, tiling: 'live' })
-    expect(small.grid.pitchMm).toBe(big.grid.pitchMm)
-    expect(small.grid.pitchMm).toBeGreaterThan(detail)
-    // A regular (loaded) job of the same small size is not coarsened.
-    expect(setupJob({ minXMm: 10, minYMm: 10, maxXMm: 12, maxYMm: 11 }, machine, wood, { cellBudget: JOB_CELL_BUDGET }).grid.pitchMm).toBe(detail)
+  it('live jobs size k from the bounds so far: it only steps up, in whole multiples, and ends on the job pitch (BURN-42)', () => {
+    const live = (b: typeof bed100) => setupJob(b, machine, wood, { cellBudget: JOB_CELL_BUDGET, tiling: 'live' })
+    const regular = (b: typeof bed100) => setupJob(b, machine, wood, { cellBudget: JOB_CELL_BUDGET })
+    // A small live job is not coarsened (before BURN-42 it got the travel area's k).
+    expect(live({ minXMm: 10, minYMm: 10, maxXMm: 12, maxYMm: 11 }).grid.pitchMm).toBe(detail)
+    // A 100 mm raster streaming top to bottom: full width from the first line, height growing.
+    let k = 1
+    const steps: number[] = []
+    for (let h = 0.1; h <= 100; h += 0.1) {
+      const b = { minXMm: 0, minYMm: 100 - h, maxXMm: 100, maxYMm: 100 }
+      const s = live(b)
+      const kNow = s.grid.pitchMm / detail
+      expect(Math.abs(kNow - Math.round(kNow))).toBeLessThan(1e-9)
+      expect(Math.round(kNow)).toBeGreaterThanOrEqual(k)
+      if (Math.round(kNow) > k) steps.push(h)
+      k = Math.round(kNow)
+      expect(cells(s.grid)).toBeLessThanOrEqual(JOB_CELL_BUDGET)
+      // Same k as the job loaded with these bounds: no step at job.loaded.
+      expect(s.grid.pitchMm).toBe(regular(b).grid.pitchMm)
+    }
+    expect(k).toBe(3)
+    expect(steps.length).toBe(2) // 5 → 10 → 15 µm on this budget
+  })
+
+  it('a streamed job ends on the pitch it gets when loaded from a file (BURN-42)', () => {
+    const job = concatJobs(
+      rasterJob({ x0Mm: 1, y0Mm: 1, widthMm: 4, heightMm: 2.5, intervalMm: 0.1, feedMmPerMin: 4000, s: 350 }),
+      squareJob(0.4, 0.4, 5.2, 900, 800, 'm3'),
+    )
+    const fine = setupJob(job.burnBounds!, machine, wood)
+    const cellBudget = Math.ceil(cells(fine.grid) / 6)
+    const loaded = setupJob(job.burnBounds!, machine, wood, { cellBudget })
+    expect(loaded.grid.pitchMm / detail).toBeCloseTo(3, 9)
+    const liveJob = new LiveJob(1, 'live', machine, wood, { cellBudget })
+    const pitches: number[] = []
+    for (const b of interimSampler.plan(job, machine, 1).batches) {
+      liveJob.onBatch(b)
+      pitches.push(liveJob.setup()!.grid.pitchMm)
+    }
+    for (let i = 1; i < pitches.length; i++) expect(pitches[i]!).toBeGreaterThanOrEqual(pitches[i - 1]!)
+    expect(pitches[0]).toBeLessThan(loaded.grid.pitchMm)
+    expect(pitches.at(-1)).toBe(loaded.grid.pitchMm)
   })
 
   it('at 3 × the detail pitch the job grid conserves energy and matches the detail run box-averaged', () => {

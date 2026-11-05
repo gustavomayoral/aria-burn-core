@@ -109,8 +109,14 @@ export interface TilePlan {
 //   - The detail view (runDetail) and the hover readout run at the detail
 //     pitch, on planJobGrid over the same bounds. Only the full-job overview and
 //     the scrub use the job pitch.
-//   - Live jobs size k from the machine's travel area, not the bounds so far,
-//     so the pitch never changes while the stream grows.
+//   - Live jobs size k from the burn bounds received so far, like any job
+//     (BURN-42). Bounds only grow while a job streams, so k only steps up, in
+//     whole multiples, and a stream whose bounds reach the job's ends on the
+//     job's pitch with no step at job.loaded. A step changes the job grid like
+//     growth does (tiles and coarse checkpoints rebuild); the detail view, the
+//     hover readout and the live thermal plan (thermal.ts) don't depend on k.
+//     (Before BURN-42 live jobs sized k from the machine's travel area, which
+//     held the pitch but left it ~3× coarse until job.loaded.)
 //   - Without a GPU (CPU reference, tests) the budget is Infinity: k = 1.
 
 /**

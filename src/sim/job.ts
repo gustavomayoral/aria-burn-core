@@ -84,9 +84,8 @@ export function setupJob(
   const detailPitchMm = options.pitchMm ?? gridPitchMm(machine.spot)
   const kernel = kernelSigma(machine.spot, material.sigmaHeatMm)
   const tiling = options.tiling ?? 'regular'
-  // Live jobs size the pitch from the travel area so it holds while the bounds grow (contract tiling.ts).
-  const pitchBounds = tiling === 'live' ? unionBounds(burnBounds, travelBounds(machine)) : burnBounds
-  const pitchMm = jobPitchMm(pitchBounds, detailPitchMm, kernel, options.cellBudget ?? Infinity)
+  // Live jobs size k from the bounds so far, so it steps up in whole multiples as they grow (contract tiling.ts, BURN-42).
+  const pitchMm = jobPitchMm(burnBounds, detailPitchMm, kernel, options.cellBudget ?? Infinity)
   const grid = planJobGrid(burnBounds, pitchMm, kernel)
   const maxCells = options.maxTileCells ?? TILE_MAX_CELLS
   const plan = tiling === 'live' ? planLiveTiles(grid, kernel, maxCells) : planTiles(grid, kernel, maxCells)
@@ -107,15 +106,6 @@ export function setupJob(
   if (tiling === 'live') setup.thermalPlanning = 'live'
   return setup
 }
-
-const travelBounds = (m: MachineProfile): BoundsMm => ({ minXMm: 0, minYMm: 0, maxXMm: m.travelMm.x, maxYMm: m.travelMm.y })
-
-const unionBounds = (a: BoundsMm, b: BoundsMm): BoundsMm => ({
-  minXMm: Math.min(a.minXMm, b.minXMm),
-  minYMm: Math.min(a.minYMm, b.minYMm),
-  maxXMm: Math.max(a.maxXMm, b.maxXMm),
-  maxYMm: Math.max(a.maxYMm, b.maxYMm),
-})
 
 const detailSetups = new WeakMap<SimSetup, SimSetup>()
 
