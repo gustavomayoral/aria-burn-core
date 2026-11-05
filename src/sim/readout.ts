@@ -97,7 +97,13 @@ export class CellReader {
     return this.index
   }
 
-  private thermal(): ThermalResult | null {
+  /** The setup the reader evaluates on (the detail setup in the app). */
+  get simSetup(): SimSetup {
+    return this.setup
+  }
+
+  /** The thermal step's result for the store as it is now (cached), or null without a thermal model. */
+  thermal(): ThermalResult | null {
     const { machine, material, thermalKernel, thermalStep, thermalPlanning } = this.setup
     return thermalFor(this.store, machine, material, thermalKernel, thermalStep, thermalPlanning)
   }
@@ -107,13 +113,34 @@ export class CellReader {
    * `energies` (a thermal step's per-sample eAbs or eDose) those replace E·absorption.
    */
   private evaluate(cx: number, cy: number, limit: number, lines: Map<number, number> | null, energies: Float32Array | null = null): number {
-    const { grid, separable, material } = this.setup
+    const { pitchMm } = this.setup.grid
+    const scale = this.setup.material.absorption / (pitchMm * pitchMm)
+    const inv2 = 1 / (pitchMm * pitchMm)
+    const xye = this.store.xye
+    let total = 0
+    this.visit(cx, cy, limit, (s, w) => {
+      const f = energies ? w * energies[s]! * inv2 : w * xye[s * 3 + 2]! * scale
+      total += f
+      if (lines) {
+        const line = this.store.line[s]!
+        lines.set(line, (lines.get(line) ?? 0) + f)
+      }
+    })
+    return total
+  }
+
+  /**
+   * Calls fn(sample, w) for every sample before `limit` that reaches job-grid
+   * cell (cx, cy), with w its deposit weight there (bilinear × blur kernel,
+   * dimensionless): the cell gets w · E / pitch² from it, exactly as the grid
+   * pipeline deposits it. The outcome explanation (BURN-45) reads it.
+   */
+  visit(cx: number, cy: number, limit: number, fn: (sample: number, w: number) => void): void {
+    const { grid, separable } = this.setup
     const { pitchMm } = grid
     const kx = separable.x
     const ky = separable.y
     const skew = separable.skew
-    const scale = material.absorption / (pitchMm * pitchMm)
-    const inv2 = 1 / (pitchMm * pitchMm)
     // Kernel weight from deposit cell (X, Y) to (cx, cy): the X pass, then the Y pass,
     // which for a rotated spot reads the X pass at cx + offset and the cell after it.
     const xWeight = (from: number, at: number): number => {
@@ -135,7 +162,6 @@ export class CellReader {
     const centreX = grid.originXMm + (cx + 0.5) * pitchMm
     const centreY = grid.originYMm + (cy + 0.5) * pitchMm
     const xye = this.store.xye
-    let total = 0
     this.bucketIndex().forEach(centreX - reachX, centreY - reachY, centreX + reachX, centreY + reachY, limit, (s) => {
       const fx = (xye[s * 3]! - grid.originXMm) / pitchMm - 0.5
       const fy = (xye[s * 3 + 1]! - grid.originYMm) / pitchMm - 0.5
@@ -152,15 +178,8 @@ export class CellReader {
           w += (dx ? ax : 1 - ax) * wy * kernelAt(ix + dx, iy + dy)
         }
       }
-      if (w === 0) return
-      const f = energies ? w * energies[s]! * inv2 : w * xye[s * 3 + 2]! * scale
-      total += f
-      if (lines) {
-        const line = this.store.line[s]!
-        lines.set(line, (lines.get(line) ?? 0) + f)
-      }
+      if (w !== 0) fn(s, w)
     })
-    return total
   }
 
   /** Readout at an absolute machine position, for samples up to the time cutoff. */
