@@ -1,0 +1,134 @@
+BURN-41 first-detail-run bench in the real Aria Burn webview: macOS 14.6.1, WKWebView ("Apple GPU"),
+Apple M1, on AC power, run 2026-11-04. NOT Windows/Iris Xe.
+Branch burn-41 at a801505, served with `npx vite bench --port 5241 --strictPort`. The app was aria-burn
+target/debug/aria-burn with ARIA_BURN_BENCH_URL='http://localhost:5241/?auto=detail'; reports came back over
+POST /__bench-report. Foreground native window (page visible). WKWebView's performance.now() has 1 ms
+resolution. Each attempt waited for 30 s with no vitest / cargo / rustc / tsc process and was to be discarded
+if one appeared during the run; none did, so all three were kept (16:55, 16:56, 16:57).
+
+What the scenarios are (bench/bench.ts runDetailBench, ?auto=detail):
+- app sequence: what aria-burn's tick does: GlSim.fit, the full run, then the first runDetail over a
+  1920 × 1080-cell view at the 5 µm detail pitch, then pans. On this M1 both budgets plan 2 × 2 tiles, so fit
+  already built the whole-job bins and the detail run used them (as before BURN-41).
+- after releaseTargets: the BURN-37 bench's sequence (the one that measured 2.4–2.6 s on Iris Xe):
+  releaseTargets between the full run and the detail run. That drops the bins and the thermal step's GPU
+  state, so the detail run re-uploads the per-sample thermal energies (19.7 M samples, ~157 MB) and now
+  bins only a window of buckets around the view.
+- before BURN-41: the same sequence with the whole-job bins built in the detail run, as runDetail did
+  before; split into thermal re-upload, whole-job bins and the run.
+
+Summary (3 kept runs, min–max):
+
+                                         default budget (256 M, k = 2)   Iris Xe budget (50 M, k = 3)
+  app sequence, first detail             15–18 ms                        12–15 ms
+  after releaseTargets, first detail     449–461 ms                      414–426 ms
+  before BURN-41, same sequence          822–930 ms                      617–692 ms
+    of which whole-job bins              420–535 ms                      247–324 ms
+    of which thermal re-upload           245–253 ms                      238–248 ms
+  pans ×5 (37 cells), median             12–13 ms                        10–12 ms
+  far pans ×3 (1920 cells), median       11–13 ms                        10–11 ms
+
+- Window bins cut the binning part of the first detail run from 250–535 ms to roughly 20–80 ms here (the
+  after-releaseTargets time minus the thermal re-upload and the run).
+- What is left on the BURN-37 bench sequence is mostly the thermal re-upload. The app does not pay it in a
+  detail run: GlSim.fit uploads the thermal state before the full run, and releaseTargets only runs when a
+  job is closed or cleared.
+- Window bins vs whole-job bins, GPU readback of fluence/dose, colour, depth and verdict over three views and
+  two cutoffs: bit-identical in every run.
+
+
+=== Run 1 ===
+[auto=detail]
+== First detail run (BURN-41) · Apple GPU ==
+userAgent Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (256 M) --
+job pitch 10.0 µm (k = 2) · tiles 2 × 2 · fit 2618.0 ms (thermal step + whole-job bins: multi-tile plan) · full run 1017.0 ms
+app sequence: first detail 18.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 12.0 ms / median 13.0 ms / max 15.0 ms · far pans ×3 (1920 cells) min 13.0 ms / median 13.0 ms / max 13.0 ms
+after releaseTargets (BURN-37 bench sequence): first detail 461.0 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 930.0 ms = thermal re-upload 246.0 ms + whole-job bins 535.0 ms + run 149.0 ms
+
+-- budget Iris Xe (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 2 × 2 · fit 508.0 ms (thermal step + whole-job bins: multi-tile plan) · full run 676.0 ms
+app sequence: first detail 15.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 11.0 ms / median 12.0 ms / max 16.0 ms · far pans ×3 (1920 cells) min 10.0 ms / median 11.0 ms / max 11.0 ms
+after releaseTargets (BURN-37 bench sequence): first detail 422.0 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 649.0 ms = thermal re-upload 248.0 ms + whole-job bins 249.0 ms + run 152.0 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (256 M): first detail run, app sequence < 2 s
+PASS budget this GPU's default (256 M): first detail run after releaseTargets < 2 s
+PASS budget Iris Xe (50 M): first detail run, app sequence < 2 s
+PASS budget Iris Xe (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
+
+=== Run 2 ===
+[auto=detail]
+== First detail run (BURN-41) · Apple GPU ==
+userAgent Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (256 M) --
+job pitch 10.0 µm (k = 2) · tiles 2 × 2 · fit 2655.0 ms (thermal step + whole-job bins: multi-tile plan) · full run 932.0 ms
+app sequence: first detail 15.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 11.0 ms / median 12.0 ms / max 13.0 ms · far pans ×3 (1920 cells) min 11.0 ms / median 11.0 ms / max 12.0 ms
+after releaseTargets (BURN-37 bench sequence): first detail 459.0 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 822.0 ms = thermal re-upload 245.0 ms + whole-job bins 420.0 ms + run 157.0 ms
+
+-- budget Iris Xe (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 2 × 2 · fit 508.0 ms (thermal step + whole-job bins: multi-tile plan) · full run 670.0 ms
+app sequence: first detail 15.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 10.0 ms / median 10.0 ms / max 11.0 ms · far pans ×3 (1920 cells) min 10.0 ms / median 10.0 ms / max 13.0 ms
+after releaseTargets (BURN-37 bench sequence): first detail 426.0 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 692.0 ms = thermal re-upload 238.0 ms + whole-job bins 324.0 ms + run 130.0 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (256 M): first detail run, app sequence < 2 s
+PASS budget this GPU's default (256 M): first detail run after releaseTargets < 2 s
+PASS budget Iris Xe (50 M): first detail run, app sequence < 2 s
+PASS budget Iris Xe (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
+
+=== Run 3 ===
+[auto=detail]
+== First detail run (BURN-41) · Apple GPU ==
+userAgent Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (256 M) --
+job pitch 10.0 µm (k = 2) · tiles 2 × 2 · fit 2397.0 ms (thermal step + whole-job bins: multi-tile plan) · full run 1149.0 ms
+app sequence: first detail 16.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 10.0 ms / median 12.0 ms / max 12.0 ms · far pans ×3 (1920 cells) min 10.0 ms / median 11.0 ms / max 11.0 ms
+after releaseTargets (BURN-37 bench sequence): first detail 449.0 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 846.0 ms = thermal re-upload 253.0 ms + whole-job bins 474.0 ms + run 119.0 ms
+
+-- budget Iris Xe (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 2 × 2 · fit 583.0 ms (thermal step + whole-job bins: multi-tile plan) · full run 662.0 ms
+app sequence: first detail 12.0 ms (whole-job bins from fit) · pans ×5 (37 cells) min 9.0 ms / median 10.0 ms / max 11.0 ms · far pans ×3 (1920 cells) min 10.0 ms / median 10.0 ms / max 10.0 ms
+after releaseTargets (BURN-37 bench sequence): first detail 414.0 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 617.0 ms = thermal re-upload 242.0 ms + whole-job bins 247.0 ms + run 128.0 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (256 M): first detail run, app sequence < 2 s
+PASS budget this GPU's default (256 M): first detail run after releaseTargets < 2 s
+PASS budget Iris Xe (50 M): first detail run, app sequence < 2 s
+PASS budget Iris Xe (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
