@@ -12,6 +12,17 @@ function benchReport(): Plugin {
   return {
     name: 'bench-report',
     configureServer(server) {
+      // BURN-38: a step mark, logged with this server's clock so an external memory sampler can be lined up with it.
+      server.middlewares.use('/__bench-mark', (req, res) => {
+        let body = ''
+        req.setEncoding('utf8')
+        req.on('data', (chunk: string) => (body += chunk))
+        req.on('end', () => {
+          console.log(`MARK ${body}`)
+          res.statusCode = 204
+          res.end()
+        })
+      })
       server.middlewares.use('/__bench-report', (req, res) => {
         if (req.method !== 'POST') {
           res.statusCode = 405

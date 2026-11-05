@@ -39,6 +39,7 @@ import {
 } from '../src/sim/index.ts'
 import type { MaterialProfile } from '../src/contract/index.ts'
 import { concatJobs, rasterJob, squareJob } from '../src/sim/test-jobs.ts'
+import { Program } from '../src/sim/gl/gl-util.ts'
 
 const out = document.getElementById('out')!
 const canvas = document.getElementById('canvas') as HTMLCanvasElement
@@ -763,6 +764,117 @@ async function runStages(): Promise<void> {
   ;(window as unknown as { __benchStages: string }).__benchStages = lines.join('\n')
 }
 
+/**
+ * BURN-38: where the WebView2 GPU process's shared GPU memory goes. Each step
+ * allocates or frees one thing, then waits so an external sampler (Windows:
+ * "\GPU Process Memory(*)\Shared Usage" at 1 Hz) can read the process; each
+ * mark is POSTed to the bench server, which logs it with its own clock.
+ * Part 1: raw buffers and a readback the size of the 5 µm job's (19.7 M samples).
+ * Part 2: the 5 µm job's fit and full run, step by step, as the app does them.
+ */
+async function runGpuMem(): Promise<void> {
+  lines.length = 0
+  const settle = Number(new URLSearchParams(location.search).get('settle') ?? 4000)
+  log('== GPU process memory accounting (BURN-38) ==')
+  log(`user agent: ${navigator.userAgent}`)
+  log(`gl renderer: ${sim.caps.renderer} · settle ${settle} ms per step`)
+  const mark = async (label: string) => {
+    sim.sync()
+    const line = `${new Date().toISOString()} · ledger ${mb(ledger(gl!).total).padStart(9)} · lost ${gl!.isContextLost()} · ${label}`
+    log(line)
+    await fetch('/__bench-mark', { method: 'POST', body: `${Date.now()} ${label} · ledger ${mb(ledger(gl!).total)}` }).catch(() => {})
+    await new Promise((r) => setTimeout(r, settle))
+    if (gl!.isContextLost()) throw new GlContextLostError(`lost after: ${label}`)
+  }
+  const n = 19_688_836
+  const data = new Float32Array(n * 3)
+  for (let i = 0; i < data.length; i++) data[i] = (i % 1000) * 1e-3
+  const prog = new Program(gl!, `#version 300 es
+layout(location = 0) in vec3 a;
+void main() { gl_Position = vec4(a.x * 0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }`, `#version 300 es
+precision highp float; out vec4 o; void main() { o = vec4(1.0); }`)
+  const vao = gl!.createVertexArray()!
+  const drawFrom = (buf: WebGLBuffer) => {
+    gl!.bindVertexArray(vao)
+    gl!.bindBuffer(gl!.ARRAY_BUFFER, buf)
+    gl!.enableVertexAttribArray(0)
+    gl!.vertexAttribPointer(0, 3, gl!.FLOAT, false, 12, 0)
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null)
+    gl!.viewport(0, 0, 1, 1)
+    prog.use()
+    gl!.drawArrays(gl!.POINTS, 0, n)
+    gl!.bindVertexArray(null)
+  }
+  try {
+    await mark('baseline')
+    const bufferCase = async (label: string, usage: number, sub: boolean) => {
+      const b = gl!.createBuffer()!
+      gl!.bindBuffer(gl!.ARRAY_BUFFER, b)
+      if (sub) {
+        gl!.bufferData(gl!.ARRAY_BUFFER, data.byteLength, usage)
+        gl!.bufferSubData(gl!.ARRAY_BUFFER, 0, data)
+      } else gl!.bufferData(gl!.ARRAY_BUFFER, data, usage)
+      await mark(`${label}: ${mb(data.byteLength)} buffer uploaded`)
+      drawFrom(b)
+      await mark(`${label}: drawn from`)
+      drawFrom(b)
+      await mark(`${label}: drawn from again`)
+      gl!.deleteBuffer(b)
+      await mark(`${label}: deleted`)
+    }
+    await bufferCase('STATIC_DRAW bufferData(data)', gl!.STATIC_DRAW, false)
+    await bufferCase('DYNAMIC_DRAW bufferData(data)', gl!.DYNAMIC_DRAW, false)
+    await bufferCase('DYNAMIC_DRAW bufferData(size) + bufferSubData', gl!.DYNAMIC_DRAW, true)
+    await bufferCase('STATIC_DRAW bufferData(size) + bufferSubData', gl!.STATIC_DRAW, true)
+    // The per-sample texture's size, rendered to and read back as the hover readout does.
+    const rows = Math.ceil(n / 4096)
+    const t = gl!.createTexture()!
+    gl!.bindTexture(gl!.TEXTURE_2D, t)
+    gl!.texStorage2D(gl!.TEXTURE_2D, 1, gl!.RG32F, 4096, rows)
+    const f = gl!.createFramebuffer()!
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, f)
+    gl!.framebufferTexture2D(gl!.FRAMEBUFFER, gl!.COLOR_ATTACHMENT0, gl!.TEXTURE_2D, t, 0)
+    gl!.clearColor(1, 0, 0, 0)
+    gl!.clear(gl!.COLOR_BUFFER_BIT)
+    await mark(`RG32F 4096×${rows} texture (${mb(4096 * rows * 8)}) cleared`)
+    const raw = new Float32Array(4096 * rows * 4)
+    gl!.readPixels(0, 0, 4096, rows, gl!.RGBA, gl!.FLOAT, raw)
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null)
+    await mark('RG32F texture read back (RGBA float)')
+    gl!.deleteFramebuffer(f)
+    gl!.deleteTexture(t)
+    await mark('RG32F texture deleted')
+
+    log()
+    log('-- 5 µm 100 mm job, birch: the app sequence step by step --')
+    const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), machine)
+    const setup = setupJob(job.store.burnBounds!, machine, birch)
+    const big = new GlOverview(gl!)
+    sim.releaseTargets()
+    await mark('job sampled (CPU only)')
+    sim.syncSamples(job.store)
+    await mark('samples uploaded')
+    void sim.thermal(job.store, setup)
+    await mark('thermal step done')
+    void sim.ensureBins(job.store, setup)
+    await mark('whole-job bins uploaded')
+    big.resize(setup.grid.width, setup.grid.height)
+    await mark('overview resized')
+    const fitted = sim.fit(job.store, setup, big)
+    await mark(`fit: ${fitted.plan.tiles.length} tiles ≤ ${planSide(fitted.plan)}`)
+    sim.run(job.store, fitted, { overview: big })
+    await mark('full run done')
+    big.dispose()
+    sim.releaseTargets()
+    await mark('overview disposed, releaseTargets')
+    log('PASS gpumem sequence finished without context loss')
+  } catch (e) {
+    log(`STOPPED: ${String(e)}`)
+  }
+  gl!.deleteVertexArray(vao)
+  log(`gl error: ${gl!.getError()}`)
+}
+
 /** Quick loop for tuning: thermal step only, on the spike job (store cached across calls). */
 let costStore: ReturnType<typeof storeFor> | null = null
 async function thermalCost(runs = 2): Promise<string> {
@@ -992,7 +1104,7 @@ document.getElementById('copy')!.addEventListener('click', () => void navigator.
 
 /** ?auto=live (or run, fine, thermal, tiles, stages, pitch, detail; comma-separated): run on load and POST each report to the bench server. */
 async function autoRun(names: string[]): Promise<void> {
-  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages, pitch: runPitch, detail: runDetailBench }
+  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages, pitch: runPitch, detail: runDetailBench, gpumem: runGpuMem }
   for (const name of names) {
     const fn = runs[name]
     if (!fn) {
