@@ -19,6 +19,10 @@
 // checkpoint), so each item is uploaded about once per pass. A draw that spans
 // the window's end is split into consecutive draws, which keeps primitive order
 // and so the blended result.
+//
+// Elsewhere (Metal on Apple silicon, discrete GPUs) the window can hold the
+// whole array (`whole`): uploaded once, then appended to as a live job grows,
+// as the plain vertex buffers before it were, so runs re-upload nothing.
 
 import { trackBuffer } from './gl-util.ts'
 
@@ -27,6 +31,16 @@ export const VERTEX_WINDOW_ITEMS = 1 << 21
 
 /** Writes items [from, to) of the source into `dst`, item `from` at byte 0. */
 export type WindowFill = (dst: ArrayBuffer, from: number, to: number) => void
+
+/**
+ * Whether per-sample vertex data should go through bounded windows on this
+ * GPU (by its WebGL renderer string): on ANGLE / Direct3D 11 (every browser
+ * and WebView2 on Windows) and on Intel integrated GPUs, where it is measured
+ * (BURN-38) or the memory is shared with the system.
+ */
+export function windowedVertexData(renderer: string): boolean {
+  return /direct3d|d3d11|intel|iris|uhd graphics|hd graphics/i.test(renderer)
+}
 
 export class VertexWindow {
   readonly buffer: WebGLBuffer
@@ -42,6 +56,11 @@ export class VertexWindow {
     private readonly gl: WebGL2RenderingContext,
     /** Bytes per item (the vertex stride). */
     readonly itemBytes: number,
+    /**
+     * Hold the whole array instead of a window. A source then may only change
+     * by appending items (a SampleStore; SampleBins never change).
+     */
+    readonly whole = false,
     readonly minItems = VERTEX_WINDOW_ITEMS,
   ) {
     this.buffer = gl.createBuffer()!
@@ -52,8 +71,9 @@ export class VertexWindow {
     return this.cap * this.itemBytes
   }
 
-  /** GPU bytes it will have once used, if it isn't yet (for budget estimates). */
-  get pendingBytes(): number {
+  /** More GPU bytes it will take to draw a source of `count` items (for budget estimates). */
+  pendingBytes(count: number): number {
+    if (this.whole) return Math.max(0, count - this.cap) * this.itemBytes
     return this.cap ? 0 : this.minItems * this.itemBytes
   }
 
@@ -68,6 +88,7 @@ export class VertexWindow {
     const gl = this.gl
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer)
     if (source === this.source && version === this.version && lo >= this.from && hi <= this.to) return this.from
+    if (this.whole) return this.holdWhole(source, version, count, fill)
     if (hi - lo > this.cap) {
       // STATIC_DRAW: bound directly by ANGLE D3D11 (a DYNAMIC_DRAW buffer is streamed on every draw).
       this.cap = Math.max(this.minItems, hi - lo)
@@ -83,6 +104,29 @@ export class VertexWindow {
     this.from = lo
     this.to = to
     return lo
+  }
+
+  /** Whole mode: upload what isn't on the GPU yet (only the appended items when the source just grew). */
+  private holdWhole(source: object, version: number, count: number, fill: WindowFill): number {
+    const gl = this.gl
+    let from = source === this.source ? this.to : 0
+    if (count > this.cap) {
+      // Live jobs grow: leave headroom so appends don't reallocate (and re-upload) every time.
+      this.cap = Math.max(count, Math.ceil(this.cap * 1.5), 4096)
+      gl.bufferData(gl.ARRAY_BUFFER, this.cap * this.itemBytes, gl.STATIC_DRAW)
+      trackBuffer(gl, this.buffer, this.cap * this.itemBytes)
+      from = 0
+    }
+    if (count > from) {
+      const data = new ArrayBuffer((count - from) * this.itemBytes)
+      fill(data, from, count)
+      gl.bufferSubData(gl.ARRAY_BUFFER, from * this.itemBytes, new Uint8Array(data))
+    }
+    this.source = source
+    this.version = version
+    this.from = 0
+    this.to = count
+    return 0
   }
 
   /** Forget what it holds (the source changed in place). */

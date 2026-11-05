@@ -22,7 +22,7 @@ import { SampleBins, binLattice, bucketsOf, type BucketWindow } from '../bins.ts
 import type { SampleStore } from '../sample-store.ts'
 import { defaultThermalStep, peakTemperatureModel, thermalFor, type ThermalResult } from '../thermal.ts'
 import { GlPeakTemperatureStep } from './gl-thermal.ts'
-import { VertexWindow } from './vertex-window.ts'
+import { VertexWindow, windowedVertexData } from './vertex-window.ts'
 import { PER_SAMPLE_WIDTH } from './thermal-shaders.ts'
 import { planSide, replan, tileSide, withTileFallback } from '../tile-budget.ts'
 import {
@@ -242,6 +242,18 @@ export class GlOverview {
     this.field = mipTexture(gl, gl.RGBA16F, w, h)
     this.cover = mipTexture(gl, gl.RGBA16F, w, h)
     this.fbo = framebuffer(gl, this.color, this.verdict, this.field, this.cover)
+    // Clear now (to the zeros WebGL gives a new texture anyway): ANGLE D3D11 initialises a texture on
+    // first use with a temporary about its size, and here that lands before the run's other data is on
+    // the GPU (fit resizes the overview first) instead of on top of it in the first composite (BURN-38).
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo)
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3])
+    gl.disable(gl.SCISSOR_TEST)
+    const zero = new Float32Array(4)
+    gl.clearBufferfv(gl.COLOR, 0, zero)
+    gl.clearBufferuiv(gl.COLOR, 1, new Uint32Array(4))
+    gl.clearBufferfv(gl.COLOR, 2, zero)
+    gl.clearBufferfv(gl.COLOR, 3, zero)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
 
   /** Mip chains of colour, field and cover, once all tiles are in. */
@@ -385,10 +397,12 @@ export class GlSim {
    * `cellBudget` overrides the contract's defaultJobCellBudget(renderer).
    * `failPoolAboveBytes` makes any tile pool larger than this fail as if the GPU refused it
    * (tests and bench exercise the smaller-tile fallback with it).
+   * `windowedVertexData` overrides windowedVertexData(renderer): samples and bins through bounded
+   * vertex windows (BURN-38) rather than whole buffers.
    */
   constructor(
     readonly gl: WebGL2RenderingContext,
-    options: { forceCpuDeposit?: boolean; gpuBudgetBytes?: number; cellBudget?: number; maxTileSide?: number; failPoolAboveBytes?: number } = {},
+    options: { forceCpuDeposit?: boolean; gpuBudgetBytes?: number; cellBudget?: number; maxTileSide?: number; failPoolAboveBytes?: number; windowedVertexData?: boolean } = {},
   ) {
     assertContext(gl)
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('WebGL2: EXT_color_buffer_float is required')
@@ -415,8 +429,10 @@ export class GlSim {
     this.overviewProgram = new Program(gl, FULLSCREEN_VS, OVERVIEW_FS)
     this.emptyVao = gl.createVertexArray()!
     this.sampleVao = gl.createVertexArray()!
-    this.sampleWindow = new VertexWindow(gl, 12)
-    this.binWindow = new VertexWindow(gl, 16)
+    // Bounded windows where whole per-sample buffers cost the GPU process too much (BURN-38); whole arrays elsewhere.
+    const whole = !(options.windowedVertexData ?? windowedVertexData(this.caps.renderer))
+    this.sampleWindow = new VertexWindow(gl, 12, whole)
+    this.binWindow = new VertexWindow(gl, 16, whole)
     gl.bindVertexArray(this.sampleVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleWindow.buffer)
     gl.enableVertexAttribArray(0)
@@ -540,8 +556,8 @@ export class GlSim {
   tileSide(store?: SampleStore): number {
     const full = this.pools.get('full')
     let other = ledger(this.gl).total - (full?.bytes ?? 0)
-    // Samples and bins take a bounded window each (BURN-38), whatever the job's size.
-    if (store) other += this.sampleWindow.pendingBytes + this.binWindow.pendingBytes
+    // Samples and bins: a bounded window each (BURN-38), or the whole arrays where they aren't windowed.
+    if (store) other += this.sampleWindow.pendingBytes(store.count) + this.binWindow.pendingBytes(store.count)
     return tileSide({ budgetBytes: this.gpuBudgetBytes, otherBytes: other, maxSide: Math.min(this.maxTileSide, this.caps.maxTextureSize) })
   }
 
