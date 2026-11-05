@@ -26,8 +26,10 @@ import {
   classifyThermal,
   decodeSampleBatch,
   gridPitchMm,
+  isReverseScan,
   planJobGrid,
   planLiveTiles,
+  scanOffsetAt,
   tilePoolBytes,
   tileSideForBytes,
   validate,
@@ -198,6 +200,94 @@ describe('interim sampler', () => {
     // First sample comes after the g0 rapid to (0, 5).
     expect(store.tS[0]!).toBeGreaterThan(0.01)
     expect(store.burnBounds!.minYMm).toBeCloseTo(5, 5)
+  })
+})
+
+describe('scan offset (BURN-48)', () => {
+  // Bidirectional fill, lines 1 mm apart so each deposits into its own rows: even lines +X, odd lines -X.
+  const feed = 3000
+  const fill = rasterJob({ x0Mm: 2, y0Mm: 2, widthMm: 8, heightMm: 3, intervalMm: 1, feedMmPerMin: feed, s: 600, laser: 'm3', bidirectional: true })
+  // 0.2 mm at 1500 mm/min and 0.6 mm at 6000: the offset at 3000 mm/min is 0.2 + (1500 / 4500) · 0.4 mm.
+  const curve = [
+    { feedMmPerMin: 1500, offsetMm: 0.2 },
+    { feedMmPerMin: 6000, offsetMm: 0.6 },
+  ]
+  const expected = 0.2 + (1500 / 4500) * 0.4
+  const shifted: MachineProfile = { ...roundSpot, scanOffsetMm: curve }
+
+  it('reads the curve: linear from 0 at feed 0, linear between points, flat past the last', () => {
+    expect(scanOffsetAt(undefined, 3000)).toBe(0)
+    expect(scanOffsetAt([], 3000)).toBe(0)
+    expect(scanOffsetAt(curve, 750)).toBeCloseTo(0.1, 12)
+    expect(scanOffsetAt(curve, 3000)).toBeCloseTo(expected, 12)
+    expect(scanOffsetAt(curve, 12000)).toBe(0.6)
+    expect(isReverseScan(-1, 0)).toBe(true)
+    expect(isReverseScan(1, 0)).toBe(false)
+    expect(isReverseScan(-Math.SQRT1_2, Math.SQRT1_2)).toBe(false)
+  })
+
+  it('an empty, absent or zero curve leaves the sample batches byte-identical', () => {
+    const base = interimSampler.plan(fill, roundSpot, 1).batches
+    for (const m of [{ ...roundSpot, scanOffsetMm: [] }, { ...roundSpot, scanOffsetMm: [{ feedMmPerMin: 1000, offsetMm: 0 }] }]) {
+      const got = interimSampler.plan(fill, m, 1).batches
+      expect(got.length).toBe(base.length)
+      got.forEach((b, i) => expect(Buffer.from(b).equals(Buffer.from(base[i]!))).toBe(true))
+    }
+  })
+
+  it('moves reverse-line samples by the offset at their feed, and forward lines not at all', () => {
+    const a = storeFor(fill, roundSpot).store
+    const b = storeFor(fill, shifted).store
+    expect(b.count).toBe(a.count)
+    let forward = 0
+    let reverse = 0
+    for (let i = 0; i < a.count; i++) {
+      const line = Math.round(a.xye[i * 3 + 1]! - 2)
+      const dx = b.xye[i * 3]! - a.xye[i * 3]!
+      expect(b.xye[i * 3 + 1]).toBe(a.xye[i * 3 + 1])
+      expect(b.tS[i]).toBe(a.tS[i])
+      if (line % 2 === 0) {
+        expect(dx).toBe(0)
+        forward++
+      } else {
+        // Positive offset: the -X line lands further along -X.
+        expect(dx).toBeCloseTo(-expected, 5)
+        reverse++
+      }
+    }
+    expect(forward).toBeGreaterThan(0)
+    expect(reverse).toBeGreaterThan(0)
+  })
+
+  it('moves reverse-line deposits by the expected distance and leaves forward-line deposits in place', () => {
+    const bounds = { minXMm: 1, minYMm: 2, maxXMm: 11, maxYMm: 5 }
+    const setup = setupJob(bounds, roundSpot, woodFluence)
+    const g = setup.grid
+    const whole = { x: 0, y: 0, width: g.width, height: g.height }
+    // Fluence-weighted X centroid of the rows each scan line deposits into.
+    const centroids = (m: MachineProfile) => {
+      const { store } = storeFor(fill, m)
+      const dep = depositCpu(store, store.count, g, whole, woodFluence.absorption)
+      expect(dep.clippedEnergyJ).toBeLessThan(1e-12)
+      return [0, 1, 2, 3].map((k) => {
+        let w = 0
+        let wx = 0
+        for (let row = 0; row < g.height; row++) {
+          const cy = g.originYMm + (row + 0.5) * g.pitchMm
+          if (Math.abs(cy - (2 + k)) > 0.3) continue
+          for (let col = 0; col < g.width; col++) {
+            const v = dep.data[row * g.width + col]!
+            w += v
+            wx += v * (g.originXMm + (col + 0.5) * g.pitchMm)
+          }
+        }
+        return wx / w
+      })
+    }
+    const before = centroids(roundSpot)
+    const after = centroids(shifted)
+    for (const k of [0, 2]) expect(after[k]).toBeCloseTo(before[k]!, 9)
+    for (const k of [1, 3]) expect(after[k]! - before[k]!).toBeCloseTo(-expected, 4)
   })
 })
 

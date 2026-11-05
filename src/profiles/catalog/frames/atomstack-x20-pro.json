@@ -23,6 +23,7 @@
     "x": 400,
     "y": 400
   },
+  "scanOffsetMm": [],
   "modules": [
     "atomstack-20w-quad"
   ],
@@ -33,7 +34,8 @@
     "junctionDeviationMm": "provisional",
     "maxRateMmPerMin": "provisional",
     "accelMmPerS2": "provisional",
-    "travelMm": "provisional"
+    "travelMm": "provisional",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

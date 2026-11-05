@@ -905,6 +905,13 @@
             }
           }
         },
+        "scanOffsetMm": {
+          "description": "Forward/back line shift of bidirectional X fills (BURN-48), measured with the scan-offset calibration pattern (BURN-47). Not a GRBL setting. Catalog frames ship it empty (no offset), marked provisional. Feed → offset of reverse (-X) scan lines against forward (+X) ones, sorted by strictly increasing feed. Linear between points, linear from 0 mm at feed 0 up to the first point, and flat past the last point. Empty (or absent) means no offset at any feed.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScanOffsetPoint"
+          }
+        },
         "modules": {
           "minItems": 1,
           "uniqueItems": true,
@@ -951,6 +958,9 @@
               "$ref": "#/$defs/FieldStatus"
             },
             "travelMm": {
+              "$ref": "#/$defs/FieldStatus"
+            },
+            "scanOffsetMm": {
               "$ref": "#/$defs/FieldStatus"
             }
           }
@@ -1075,6 +1085,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/PowerCurvePoint"
+          }
+        },
+        "scanOffsetMm": {
+          "description": "Scan offset of the frame (BURN-48), copied from MachineFrame.scanOffsetMm or applied from a reading. Feed → offset of reverse (-X) scan lines against forward (+X) ones, sorted by strictly increasing feed. Linear between points, linear from 0 mm at feed 0 up to the first point, and flat past the last point. Empty (or absent) means no offset at any feed.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScanOffsetPoint"
           }
         },
         "wavelengthNm": {
@@ -1552,6 +1569,27 @@
         "meanDeltaE": {
           "description": "Mean CIEDE2000 between fitted and photographed cells",
           "minimum": 0,
+          "type": "number"
+        }
+      }
+    },
+    "ScanOffsetPoint": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "feedMmPerMin",
+        "offsetMm"
+      ],
+      "properties": {
+        "feedMmPerMin": {
+          "description": "Programmed feed of the scan line (mm/min)",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "offsetMm": {
+          "description": "How far lines scanned in -X land from lines scanned in +X at this feed (mm). Positive = further along -X (the reverse line lands past where it was programmed, in its direction of travel).",
+          "minimum": -5,
+          "maximum": 5,
           "type": "number"
         }
       }

@@ -13,7 +13,7 @@
 
 import { Type, type Static } from '@sinclair/typebox'
 import { CONTRACT_VERSION, Positive, Provenance, named } from './common.ts'
-import { AxisPair, PowerCurvePoint, checkPowerCurve, type MachineProfile } from './machine.ts'
+import { AxisPair, PowerCurvePoint, ScanOffsetCurve, checkPowerCurve, checkScanOffset, type MachineProfile } from './machine.ts'
 
 const CatalogId = (description: string) =>
   Type.String({ pattern: '^[a-z0-9]+(-[a-z0-9]+)*$', minLength: 1, maxLength: 64, description })
@@ -43,6 +43,11 @@ export const MachineFrame = named(
       maxRateMmPerMin: AxisPair('$110/$111 max rate', 'mm/min'),
       accelMmPerS2: AxisPair('$120/$121 acceleration', 'mm/s²'),
       travelMm: AxisPair('$130/$131 max travel', 'mm'),
+      scanOffsetMm: Type.Optional(
+        ScanOffsetCurve(
+          'Forward/back line shift of bidirectional X fills (BURN-48), measured with the scan-offset calibration pattern (BURN-47). Not a GRBL setting. Catalog frames ship it empty (no offset), marked provisional.',
+        ),
+      ),
       modules: Type.Array(CatalogId('LaserModule id'), {
         minItems: 1,
         uniqueItems: true,
@@ -57,6 +62,7 @@ export const MachineFrame = named(
           maxRateMmPerMin: FieldStatus,
           accelMmPerS2: FieldStatus,
           travelMm: FieldStatus,
+          scanOffsetMm: Type.Optional(FieldStatus),
         },
         { additionalProperties: false, description: 'Where each frame value came from.' },
       ),
@@ -149,6 +155,8 @@ export function combineMachine(frame: MachineFrame, module: LaserModule): Machin
     maxRateMmPerMin: { ...frame.maxRateMmPerMin },
     accelMmPerS2: { ...frame.accelMmPerS2 },
     travelMm: { ...frame.travelMm },
+    // Copied when the frame has one (catalog frames: empty, i.e. no offset); a frame from before BURN-48 leaves it out.
+    ...(frame.scanOffsetMm ? { scanOffsetMm: frame.scanOffsetMm.map((p) => ({ ...p })) } : {}),
     spot: {
       sigmaXMm: module.spot.majorDiameterMm / 4,
       sigmaYMm: module.spot.minorDiameterMm / 4,
@@ -170,6 +178,8 @@ export function combineMachine(frame: MachineFrame, module: LaserModule): Machin
 export function checkMachineFrame(frame: MachineFrame): string[] {
   const problems: string[] = []
   if (!frame.laserMode) problems.push('laserMode ($32) must be true for a diode laser frame')
+  problems.push(...checkScanOffset(frame.scanOffsetMm))
+  if (frame.scanOffsetMm && !frame.fieldStatus.scanOffsetMm) problems.push('fieldStatus.scanOffsetMm is required when scanOffsetMm is set')
   return problems
 }
 
@@ -205,7 +215,7 @@ export function checkCatalog(frames: readonly MachineFrame[], modules: readonly 
 }
 
 /** MachineProfile fields a catalog frame or module sets (BURN-31 marks each one in the UI). */
-export const PROFILE_FRAME_FIELDS = ['sMax', 'laserMode', 'junctionDeviationMm', 'maxRateMmPerMin', 'accelMmPerS2', 'travelMm'] as const
+export const PROFILE_FRAME_FIELDS = ['sMax', 'laserMode', 'junctionDeviationMm', 'maxRateMmPerMin', 'accelMmPerS2', 'travelMm', 'scanOffsetMm'] as const
 export const PROFILE_MODULE_FIELDS = ['opticalPowerW', 'wavelengthNm', 'spot', 'powerCurve'] as const
 export type ProfileField = (typeof PROFILE_FRAME_FIELDS)[number] | (typeof PROFILE_MODULE_FIELDS)[number]
 
@@ -216,7 +226,8 @@ export type ProfileField = (typeof PROFILE_FRAME_FIELDS)[number] | (typeof PROFI
  */
 export function profileFieldStatus(frame: MachineFrame, module: LaserModule): Record<ProfileField, FieldStatus> {
   const out = {} as Record<ProfileField, FieldStatus>
-  for (const k of PROFILE_FRAME_FIELDS) out[k] = frame.fieldStatus[k]
+  // A frame from before BURN-48 has no scanOffsetMm status: its (zero) offset is an assumption.
+  for (const k of PROFILE_FRAME_FIELDS) out[k] = frame.fieldStatus[k] ?? 'provisional'
   for (const k of PROFILE_MODULE_FIELDS) out[k] = module.fieldStatus[k]
   return out
 }

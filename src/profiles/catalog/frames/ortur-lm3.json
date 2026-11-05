@@ -23,6 +23,7 @@
     "x": 400,
     "y": 400
   },
+  "scanOffsetMm": [],
   "modules": [
     "ortur-lu2-10a",
     "ortur-lm3-20w"
@@ -34,7 +35,8 @@
     "junctionDeviationMm": "provisional",
     "maxRateMmPerMin": "sourced",
     "accelMmPerS2": "provisional",
-    "travelMm": "provisional"
+    "travelMm": "provisional",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

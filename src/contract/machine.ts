@@ -43,6 +43,35 @@ export const PowerCurvePoint = named(
 )
 export type PowerCurvePoint = Static<typeof PowerCurvePoint>
 
+/** Largest scan offset the contract accepts (mm). The BURN-47 pick card takes the same range. */
+export const SCAN_OFFSET_MAX_MM = 5
+
+export const ScanOffsetPoint = named(
+  'ScanOffsetPoint',
+  Type.Object(
+    {
+      feedMmPerMin: Positive('Programmed feed of the scan line (mm/min)'),
+      offsetMm: Type.Number({
+        description:
+          'How far lines scanned in -X land from lines scanned in +X at this feed (mm). Positive = further along -X (the reverse line lands past where it was programmed, in its direction of travel).',
+        minimum: -SCAN_OFFSET_MAX_MM,
+        maximum: SCAN_OFFSET_MAX_MM,
+      }),
+    },
+    { additionalProperties: false },
+  ),
+)
+export type ScanOffsetPoint = Static<typeof ScanOffsetPoint>
+
+/**
+ * Bidirectional scan line shift against feed (BURN-48). Measured by the
+ * BURN-47 scan offset pattern. See `scanOffsetAt` for how it is read.
+ */
+export const ScanOffsetCurve = (description: string) =>
+  Type.Array(ScanOffsetPoint, {
+    description: `${description} Feed → offset of reverse (-X) scan lines against forward (+X) ones, sorted by strictly increasing feed. Linear between points, linear from 0 mm at feed 0 up to the first point, and flat past the last point. Empty (or absent) means no offset at any feed.`,
+  })
+
 export const MachineProfile = named(
   'MachineProfile',
   Type.Object(
@@ -62,6 +91,7 @@ export const MachineProfile = named(
         description:
           'S → optical power lookup, linear between points, sorted by s with strictly increasing s, non-decreasing power. Must start at s = 0 and end at s = 1.',
       }),
+      scanOffsetMm: Type.Optional(ScanOffsetCurve('Scan offset of the frame (BURN-48), copied from MachineFrame.scanOffsetMm or applied from a reading.')),
       wavelengthNm: Type.Optional(Positive('Laser module emission wavelength (nm). Informational; the v1 burn model does not use it.')),
       frameId: Type.Optional(
         Type.String({ minLength: 1, description: 'Catalog MachineFrame id this profile was combined from (BURN-30). Absent for hand-built profiles.' }),
@@ -115,9 +145,49 @@ export function interpolateCurve(curve: readonly PowerCurvePoint[], s: number): 
   return last.power
 }
 
+/**
+ * Scan offset (mm) at a programmed feed (BURN-48). Positive moves a reverse
+ * (-X) scan line further along -X. No points: 0. Below the first point the
+ * offset rises linearly from 0 at feed 0 (a stopped head has no shift); between
+ * points it is linear; past the last point it stays at the last value rather
+ * than extrapolating beyond what was measured.
+ */
+export function scanOffsetAt(curve: readonly ScanOffsetPoint[] | undefined, feedMmPerMin: number): number {
+  if (!curve || curve.length === 0 || !(feedMmPerMin > 0)) return 0
+  const last = curve[curve.length - 1]!
+  if (feedMmPerMin >= last.feedMmPerMin) return last.offsetMm
+  let a: ScanOffsetPoint = { feedMmPerMin: 0, offsetMm: 0 }
+  for (const b of curve) {
+    if (feedMmPerMin <= b.feedMmPerMin) return a.offsetMm + ((feedMmPerMin - a.feedMmPerMin) / (b.feedMmPerMin - a.feedMmPerMin)) * (b.offsetMm - a.offsetMm)
+    a = b
+  }
+  return last.offsetMm
+}
+
+/**
+ * Scan lines the offset applies to: beam-on moves within this angle of -X
+ * (degrees). Vectors and Y scans are left alone; the BURN-47 pattern measures
+ * X scans only.
+ */
+export const SCAN_OFFSET_ANGLE_DEG = 1
+
+/** True when a move with unit direction (ux, uy) is a reverse X scan line. */
+export function isReverseScan(ux: number, uy: number): boolean {
+  return ux < 0 && Math.abs(uy) <= Math.abs(ux) * Math.tan((SCAN_OFFSET_ANGLE_DEG * Math.PI) / 180)
+}
+
+/** Scan offset ordering rules shared by MachineProfile and MachineFrame. */
+export function checkScanOffset(c: readonly ScanOffsetPoint[] | undefined): string[] {
+  const problems: string[] = []
+  if (!c) return problems
+  for (let i = 1; i < c.length; i++)
+    if (c[i]!.feedMmPerMin <= c[i - 1]!.feedMmPerMin) problems.push(`scanOffsetMm[${i}].feedMmPerMin must be greater than the previous point`)
+  return problems
+}
+
 /** Structural checks JSON Schema can't express. Returns problems; empty means valid. */
 export function checkMachineProfile(profile: MachineProfile): string[] {
-  const problems = checkPowerCurve(profile.powerCurve)
+  const problems = [...checkPowerCurve(profile.powerCurve), ...checkScanOffset(profile.scanOffsetMm)]
   if (profile.spot.sigmaYMm > profile.spot.sigmaXMm) problems.push('spot.sigmaXMm must be the major axis (>= sigmaYMm)')
   return problems
 }

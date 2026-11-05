@@ -23,6 +23,7 @@
     "x": 400,
     "y": 400
   },
+  "scanOffsetMm": [],
   "modules": [
     "longer-ray5-10w",
     "longer-ray5-5w"
@@ -34,7 +35,8 @@
     "junctionDeviationMm": "provisional",
     "maxRateMmPerMin": "provisional",
     "accelMmPerS2": "provisional",
-    "travelMm": "provisional"
+    "travelMm": "provisional",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

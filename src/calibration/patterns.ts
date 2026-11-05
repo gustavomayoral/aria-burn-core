@@ -836,9 +836,9 @@ export const scanOffsetPattern: PatternGenerator<ScanOffsetOptions> = {
   measures: {
     on: 'MachineFrame',
     field: 'scanOffsetMm',
-    inContract: false,
+    inContract: true,
     reads:
-      'At each feed, the distance between where forward and back lines end at the same strip edge (the comb at either end; the ticks mark the programmed edge). The contract has no field for it yet: scanOffsetMm per feed is the proposed name.',
+      'At each feed, the distance between where forward and back lines end at the same strip edge (the comb at either end; the ticks mark the programmed edge). Positive when back (-X) lines land further along -X. Each strip is one (feed, offset) point of MachineFrame.scanOffsetMm.',
   },
   defaults(ctx) {
     const cap = fillFeedCap(ctx, 'x')

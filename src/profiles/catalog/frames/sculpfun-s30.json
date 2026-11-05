@@ -23,6 +23,7 @@
     "x": 380,
     "y": 385
   },
+  "scanOffsetMm": [],
   "modules": [
     "sculpfun-s30-pro-10w",
     "sculpfun-s30-5w"
@@ -34,7 +35,8 @@
     "junctionDeviationMm": "sourced",
     "maxRateMmPerMin": "sourced",
     "accelMmPerS2": "sourced",
-    "travelMm": "sourced"
+    "travelMm": "sourced",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

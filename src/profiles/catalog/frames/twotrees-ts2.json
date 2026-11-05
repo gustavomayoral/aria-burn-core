@@ -23,6 +23,7 @@
     "x": 450,
     "y": 450
   },
+  "scanOffsetMm": [],
   "modules": [
     "twotrees-ts2-10w"
   ],
@@ -33,7 +34,8 @@
     "junctionDeviationMm": "provisional",
     "maxRateMmPerMin": "sourced",
     "accelMmPerS2": "provisional",
-    "travelMm": "provisional"
+    "travelMm": "provisional",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

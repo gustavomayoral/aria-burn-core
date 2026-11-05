@@ -23,6 +23,7 @@
     "x": 410,
     "y": 400
   },
+  "scanOffsetMm": [],
   "modules": [
     "atomstack-a5-pro-5w5",
     "atomstack-a10-pro-10w"
@@ -34,7 +35,8 @@
     "junctionDeviationMm": "provisional",
     "maxRateMmPerMin": "sourced",
     "accelMmPerS2": "sourced",
-    "travelMm": "provisional"
+    "travelMm": "provisional",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

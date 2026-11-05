@@ -164,7 +164,8 @@ describe('combineMachine', () => {
     expect(p.provenance.notes).toMatch(/^PROVISIONAL fields: /)
     for (const f of provisionalFields(frame, tenW)) expect(p.provenance.notes).toContain(f)
     expect(provisionalFields(frame, tenW)).toContain('module.opticalPowerW')
-    expect(provisionalFields(frame, tenW).some((f) => f.startsWith('frame.'))).toBe(false)
+    // The frame's only assumption is its scan offset: catalog frames ship it empty (zero), provisional (BURN-48).
+    expect(provisionalFields(frame, tenW).filter((f) => f.startsWith('frame.'))).toEqual(['frame.scanOffsetMm'])
   })
 
   it('a fully calibrated frame and module combine into a calibrated profile', () => {

@@ -245,7 +245,7 @@ describe('measurement patterns (BURN-47)', () => {
     const want = {
       'firing-threshold': ['first-visible', 'LaserModule', 'powerCurve', true],
       'focus-height': ['thinnest', 'LaserModule', 'spot', true],
-      'scan-offset': ['shift', 'MachineFrame', 'scanOffsetMm', false],
+      'scan-offset': ['shift', 'MachineFrame', 'scanOffsetMm', true],
     } as const
     for (const [kind, [pick, on, field, inContract]] of Object.entries(want)) {
       const p = generatePattern(kind as PatternKind, DEFAULT_MACHINE, MATERIALS[0]!)

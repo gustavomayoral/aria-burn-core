@@ -23,6 +23,7 @@
     "x": 400,
     "y": 415
   },
+  "scanOffsetMm": [],
   "modules": [
     "creality-falcon2-22w",
     "creality-falcon2-12w",
@@ -35,7 +36,8 @@
     "junctionDeviationMm": "sourced",
     "maxRateMmPerMin": "provisional",
     "accelMmPerS2": "provisional",
-    "travelMm": "sourced"
+    "travelMm": "sourced",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

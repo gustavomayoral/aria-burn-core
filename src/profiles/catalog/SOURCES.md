@@ -11,6 +11,8 @@ Every value carries a status in the data itself (`fieldStatus`):
 | `sourced` | Manufacturer spec, or a `$$` dump someone published for this machine. Linked below. |
 | `provisional` | A vendor marketing figure (optical power, spot), the generic diode power curve, or an assumed GRBL default where nothing was published. |
 
+Every frame ships `scanOffsetMm: []` (no forward/back line shift on bidirectional fills), marked `provisional`. The real shift is measured with the scan-offset calibration pattern and applied to a user's machine from the reading (BURN-48).
+
 A combined profile has `provenance.source = "provisional"` if any field is provisional, and its `notes` list every provisional field (for example `module.opticalPowerW`). `src/profiles/catalog.test.ts` checks the following:
 
 - every file validates against TypeBox and the exported JSON Schema;

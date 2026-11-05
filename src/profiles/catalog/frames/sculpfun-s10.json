@@ -23,6 +23,7 @@
     "x": 410,
     "y": 400
   },
+  "scanOffsetMm": [],
   "modules": [
     "sculpfun-s10-10w"
   ],
@@ -33,7 +34,8 @@
     "junctionDeviationMm": "provisional",
     "maxRateMmPerMin": "provisional",
     "accelMmPerS2": "provisional",
-    "travelMm": "provisional"
+    "travelMm": "provisional",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",

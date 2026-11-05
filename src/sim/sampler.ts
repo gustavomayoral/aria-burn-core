@@ -16,6 +16,10 @@
 //     rule (interval midpoints, dt ≤ SAMPLE_DT_MAX_S, step ≤ gridPitchMm).
 //   - Power uses the contract's opticalPowerW: M3 constant, M4 scaled by actual
 //     over programmed speed. Only samples with power > 0 are emitted.
+//   - Scan offset (BURN-48): beam-on reverse X scan moves (contract
+//     isReverseScan) are shifted rigidly along X by -scanOffsetAt(programmed
+//     feed). Timing and speed are untouched; forward lines never move, and a
+//     profile with no offset adds nothing, so output is bit-identical.
 
 import {
   SAMPLE_BATCH_HEADER_BYTES,
@@ -28,6 +32,8 @@ import {
   SAMPLE_STRIDE_BYTES,
   beamOn,
   gridPitchMm,
+  isReverseScan,
+  scanOffsetAt,
   opticalPowerW,
   type JobModel,
   type MachineProfile,
@@ -216,6 +222,8 @@ export const interimSampler: MotionSampler = {
         [vPeak, -a, dDecel],
       ]
       const on = beamOn(s.move)
+      const shift = on && isReverseScan(s.ux, s.uy) ? scanOffsetAt(machine.scanOffsetMm, s.programmedMmPerMin) : 0
+      const x0 = shift === 0 ? s.x0 : s.x0 - shift
       let offsetMm = 0
       for (const [v0, acc, dist] of blocks) {
         if (dist <= 1e-12) continue
@@ -229,7 +237,7 @@ export const interimSampler: MotionSampler = {
             const v = v0 + acc * tm
             const along = offsetMm + v0 * tm + 0.5 * acc * tm * tm
             const powerW = opticalPowerW(machine, s.move.s, s.move.laser, v * 60, s.programmedMmPerMin)
-            if (powerW > 0) writer.push(tS + tm, s.x0 + s.ux * along, s.y0 + s.uy * along, dt, v, powerW, s.move.line)
+            if (powerW > 0) writer.push(tS + tm, x0 + s.ux * along, s.y0 + s.uy * along, dt, v, powerW, s.move.line)
           }
         }
         tS += durationS

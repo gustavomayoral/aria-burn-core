@@ -23,6 +23,7 @@
     "x": 410,
     "y": 400
   },
+  "scanOffsetMm": [],
   "modules": [
     "sculpfun-s9-5w5"
   ],
@@ -33,7 +34,8 @@
     "junctionDeviationMm": "sourced",
     "maxRateMmPerMin": "sourced",
     "accelMmPerS2": "sourced",
-    "travelMm": "sourced"
+    "travelMm": "sourced",
+    "scanOffsetMm": "provisional"
   },
   "provenance": {
     "source": "provisional",
