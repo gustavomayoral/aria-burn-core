@@ -1,0 +1,32 @@
+BURN-45 "Why this result" click check in the Aria Burn app (WebView2) on Windows / Intel Iris Xe, run 2026-11-05.
+aria-burn-core main at a21d142 (explain code af25d2f, 1c0a2a1; test job cd2f423) · aria-burn main at 9232a1a
+Windows 11 Home 26H2 (10.0.26300.9818) · WebView2 Runtime 156.0.4314.58 · Iris Xe (0x9A49), driver 30.0.101.1191
+Build: debug, frontend embedded (`pnpm build`, then `cargo build -p aria-burn --features tauri/custom-protocol
+--target-dir target-embed`), because an unrelated dev server held port 1420. Started on the logged-in desktop with
+ARIA_BURN_OPEN=C:\Users\gusta\src\aria-burn-core\docs\bench\jobs\burn-45-corners-fill.gcode.
+Machine profile shown: Generic 10 W diode. Clicks by the user on the laptop; cards read by the user and from
+desktop screenshots (burn-45-explain-tauri-windows-irisxe.png).
+
+Result: PASS.
+
+1. Black anodized aluminum, Verdict overlay on, ~9x on the bottom-right square corner (X 30, Y 10):
+   Over. Top moves line 6 at 550 and line 7 at 535 of 3000 mm/min (M3), i.e. the head slowing at the corner,
+   as on M1 (lines 7 and 6, 17 % of commanded).
+2. Birch, Fit, inside the fill: Fire risk (M1 read Over-burned / charred) with Heat build-up as the cause.
+   Here the temperature limit trips first. Most fill cells list M4 moves at 2000 / 2000 mm/min: inside the
+   fill the head runs at the commanded speed, which is correct.
+3. Fill end cell found after ~50 clicks (X 14.24, Y 15.15, left end of the lines, 26x):
+   Fire risk: built-up heat 1168 °C past birch's 600 °C fire-risk limit. Fluence 1.71 J/mm², thermal dose
+   1.71 J/mm², peak 2830 °C, 56 % from preheat.
+   Causes: Heat build-up (without preheat 0.751 J/mm², in range); Moves add up (lines 78 and 76 overlap; the
+   strongest alone 1.06 J/mm², in range).
+   Moves: line 78 62 %, M4 S1000 (100 %), 1352 / 2000 mm/min, 6.5 W; line 76 38 %, M4 S1000, 1355 / 2000 mm/min.
+   Footer: "2 moves reach this cell; all listed. Answered in under 1 ms."
+
+Timing: both cards whose footer was read said "Answered in under 1 ms" (the clock here also ticks in whole ms).
+None of the ~50 clicks showed visible lag before its card appeared. Pass bar: < 100 ms per click.
+Not checked: each move's fluence share against the hover readout (the shares sum to 100 % of the 1.71 J/mm²
+the card shows).
+
+Note: the card is taller than a 1536 × 864 (125 %) screen at the default 1440 × 900 window, so its footer
+("Answered in …") is only reachable by scrolling inside the card after maximizing the window.
