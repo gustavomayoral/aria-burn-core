@@ -824,6 +824,7 @@ precision highp float; out vec4 o; void main() { o = vec4(1.0); }`)
   try {
     await mark('baseline')
     if (parts.includes('probes')) await probes()
+    if (parts.includes('cost')) await costModel()
     if (parts.includes('job')) await jobSteps()
     log('PASS gpumem sequence finished without context loss')
   } catch (e) {
@@ -870,6 +871,112 @@ precision highp float; out vec4 o; void main() { o = vec4(1.0); }`)
     gl!.deleteFramebuffer(f)
     gl!.deleteTexture(t)
     await mark('RG32F texture deleted')
+  }
+
+  /** Cumulative (nothing deleted until the end), so each step's increase is its own cost. */
+  async function costModel(): Promise<void> {
+    log()
+    log('-- cost model: one allocation per step, nothing freed --')
+    const n = 19_688_836
+    const xye = new Float32Array(n * 3)
+    for (let i = 0; i < xye.length; i++) xye[i] = (i % 1000) * 1e-3
+    const idx = new Uint32Array(n)
+    for (let i = 0; i < n; i++) idx[i] = i
+    const ov = new GlOverview(gl!)
+    ov.resize(20012, 20040)
+    await mark(`overview ${ov.width}×${ov.height} allocated (${mb(ledger(gl!).total)} by the ledger)`)
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, ov.fbo)
+    gl!.drawBuffers([gl!.COLOR_ATTACHMENT0, gl!.COLOR_ATTACHMENT1, gl!.COLOR_ATTACHMENT2, gl!.COLOR_ATTACHMENT3])
+    gl!.clearBufferfv(gl!.COLOR, 0, new Float32Array(4))
+    gl!.clearBufferuiv(gl!.COLOR, 1, new Uint32Array(4))
+    gl!.clearBufferfv(gl!.COLOR, 2, new Float32Array(4))
+    gl!.clearBufferfv(gl!.COLOR, 3, new Float32Array(4))
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null)
+    await mark('overview rendered to (cleared)')
+    ov.finish()
+    await mark('overview mips generated')
+    const rows = Math.ceil(n / 4096)
+    const t = gl!.createTexture()!
+    gl!.bindTexture(gl!.TEXTURE_2D, t)
+    gl!.texStorage2D(gl!.TEXTURE_2D, 1, gl!.RG32F, 4096, rows)
+    const f = gl!.createFramebuffer()!
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, f)
+    gl!.framebufferTexture2D(gl!.FRAMEBUFFER, gl!.COLOR_ATTACHMENT0, gl!.TEXTURE_2D, t, 0)
+    gl!.clear(gl!.COLOR_BUFFER_BIT)
+    gl!.bindFramebuffer(gl!.FRAMEBUFFER, null)
+    await mark(`RG32F 4096×${rows} (${mb(4096 * rows * 8)}) rendered to`)
+    const draw = (buf: WebGLBuffer, chunks: number, instanced: boolean, integer = false) => {
+      gl!.bindVertexArray(vao)
+      gl!.bindBuffer(gl!.ARRAY_BUFFER, buf)
+      gl!.enableVertexAttribArray(0)
+      gl!.bindFramebuffer(gl!.FRAMEBUFFER, null)
+      gl!.viewport(0, 0, 1, 1)
+      prog.use()
+      const per = Math.ceil(n / chunks)
+      for (let first = 0; first < n; first += per) {
+        const count = Math.min(per, n - first)
+        if (integer) gl!.vertexAttribIPointer(0, 1, gl!.UNSIGNED_INT, 4, first * 4)
+        else gl!.vertexAttribPointer(0, 3, gl!.FLOAT, false, 12, instanced ? first * 12 : 0)
+        gl!.vertexAttribDivisor(0, instanced ? 1 : 0)
+        if (instanced) gl!.drawArraysInstanced(gl!.POINTS, 0, 1, count)
+        else gl!.drawArrays(gl!.POINTS, first, count)
+      }
+      gl!.vertexAttribDivisor(0, 0)
+      gl!.bindVertexArray(null)
+    }
+    const buf = (usage: number, src: ArrayBufferView & { byteLength: number }, sub: boolean) => {
+      const b = gl!.createBuffer()!
+      gl!.bindBuffer(gl!.ARRAY_BUFFER, b)
+      if (sub) {
+        gl!.bufferData(gl!.ARRAY_BUFFER, src.byteLength, usage)
+        gl!.bufferSubData(gl!.ARRAY_BUFFER, 0, src)
+      } else gl!.bufferData(gl!.ARRAY_BUFFER, src, usage)
+      return b
+    }
+    const keep: WebGLBuffer[] = []
+    let b = buf(gl!.STATIC_DRAW, xye, false)
+    keep.push(b)
+    await mark('A STATIC bufferData(data) 225 MiB, uploaded')
+    draw(b, 1, false)
+    await mark('A drawn once (whole)')
+    draw(b, 1000, true)
+    await mark('A drawn instanced in 1000 offset chunks')
+    b = buf(gl!.STATIC_DRAW, xye, true)
+    keep.push(b)
+    draw(b, 1000, false)
+    await mark('B STATIC bufferData(size)+bufferSubData 225 MiB, drawn in 1000 chunks')
+    gl!.bindBuffer(gl!.ARRAY_BUFFER, b)
+    gl!.bufferSubData(gl!.ARRAY_BUFFER, 0, xye, 0, n * 3 / 2)
+    draw(b, 1000, false)
+    await mark('B half re-uploaded with bufferSubData, drawn')
+    b = buf(gl!.DYNAMIC_DRAW, xye, false)
+    keep.push(b)
+    draw(b, 1000, false)
+    await mark('C DYNAMIC bufferData(data) 225 MiB, drawn in 1000 chunks')
+    draw(b, 1, false)
+    await mark('C drawn once (whole)')
+    b = buf(gl!.DYNAMIC_DRAW, xye, false)
+    keep.push(b)
+    draw(b, 1000, true)
+    await mark('D DYNAMIC 225 MiB #2, drawn instanced in 1000 chunks')
+    b = buf(gl!.STATIC_DRAW, idx, false)
+    keep.push(b)
+    draw(b, 1000, true, true)
+    await mark('E STATIC UINT32 75 MiB integer attribute, drawn instanced in 1000 chunks')
+    b = buf(gl!.STATIC_DRAW, xye, false)
+    draw(b, 1, false)
+    await mark('F STATIC 225 MiB #3 drawn')
+    gl!.bindBuffer(gl!.ARRAY_BUFFER, b)
+    gl!.bufferData(gl!.ARRAY_BUFFER, 0, gl!.STATIC_DRAW)
+    await mark('F emptied with bufferData(0)')
+    gl!.deleteBuffer(b)
+    await mark('F deleted')
+    for (const k of keep) gl!.deleteBuffer(k)
+    await mark('A-E deleted')
+    ov.dispose()
+    gl!.deleteFramebuffer(f)
+    gl!.deleteTexture(t)
+    await mark('overview and RG32F deleted')
   }
 
   async function jobSteps(): Promise<void> {
