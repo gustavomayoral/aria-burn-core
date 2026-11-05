@@ -1,0 +1,208 @@
+BURN-35 live-job bench in WebView2 (Aria Burn app) on Windows / Intel Iris Xe, run 2026-11-05.
+aria-burn-core main at 85d07d7 (BURN-35 code 1816971) · aria-burn main at 9232a1a (debug build)
+Windows 11 Home 26H2 (10.0.26300.9818) · Edge 156.0.4314.58 · WebView2 Runtime 156.0.4314.58
+GPU Intel Iris Xe Graphics (0x9A49), driver 30.0.101.1191, ANGLE / Direct3D 11 · 16 GB RAM, on AC power
+Bench server `npx vite bench --port 5299 --strictPort` (older servers held 5199/5200), report copied from its log.
+Machine: the laptop's Claude app (~6 GB) and WSL (~7 GB, incl. the Plane server) stayed open; 5-7 GB RAM
+free before the run. No other build, test or bench ran during it.
+The app was started on the logged-in desktop (one-shot interactive scheduled task), foreground, with
+ARIA_BURN_BENCH_URL=http://localhost:5299/?auto=live, fresh app process.
+
+Result: spike job PASS; 5 µm job incomplete (WebGL context lost).
+  spike job, 10 chunks:  incr 294 / 212 ms, median 212 ms     (before: full rerun 1116 / 1240 / 2109 ms)
+  spike job, 40 chunks:  104 / 74 / 72 ms, median 75 ms (29 incr, 11 full)
+  5 µm job, 10 chunks, before: 1164 / 3104 / 7104 ms (full rerun every refresh)
+  5 µm job, 10 chunks, after: 1421 ms (full, 10 %), 442 ms (incr, 50 %), then "GlContextLostError: WebGL context
+    lost before the thermal result was read back". The 40-chunk 5 µm section did not run.
+- Spike job: flat as the stream grows and ~3x smaller with 4x smaller chunks.
+- At the loss the WebView2 GPU process held 2519 MiB of shared GPU memory, 3043 MiB total, with
+  0.9-1.0 GB RAM free (Get-Counter, ~4 s samples). No Display event 4101. Edge ran the same 5 µm sections to
+  the end (burn-35-live-edge-windows-irisxe.txt). Same WebView2-only loss as BURN-41's runs; see BURN-38.
+
+=== WebView2, ?auto=live, fresh app process ===
+[auto=live]
+== Live job (BURN-33 / BURN-35): cost of one refresh as the stream grows ==
+user agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0
+gl renderer: ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)
+page visible: visible
+gl error before: 0
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) · 10 chunks · before: full thermal rerun every refresh ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait
+    10 % |    589,824 |   589,824 |     1 |   1.8 ms | 1116.0 ms | full |   701 | 115.9 ms | 1233.7 ms | 2467.4 ms
+    20 % |  1,179,648 |   589,824 |     1 |   0.4 ms | 1153.0 ms | full |   701 |  68.7 ms | 1222.2 ms | 2444.4 ms
+    30 % |  1,769,472 |   589,824 |     1 |   0.5 ms | 1566.9 ms | full |   526 |  89.4 ms | 1656.8 ms | 3313.6 ms
+    40 % |  2,359,296 |   589,824 |     1 |   0.6 ms |  889.4 ms | full |   701 | 128.5 ms | 1018.5 ms | 2037.0 ms
+    50 % |  2,965,504 |   606,208 |     1 |   0.7 ms | 1240.2 ms | full |   881 | 155.2 ms | 1396.1 ms | 2792.2 ms
+    60 % |  3,555,328 |   589,824 |     1 |   0.6 ms | 1730.7 ms | full |   529 | 128.5 ms | 1859.8 ms | 3719.6 ms
+    70 % |  4,145,152 |   589,824 |     2 |   0.6 ms | 1393.5 ms | full |   616 | 192.2 ms | 1586.3 ms | 3172.6 ms
+    80 % |  4,734,976 |   589,824 |     2 |   0.5 ms | 1354.9 ms | full |   704 | 196.5 ms | 1551.9 ms | 3103.8 ms
+    90 % |  5,324,800 |   589,824 |     4 |   0.7 ms | 1688.5 ms | full |   791 | 328.4 ms | 2017.6 ms | 4035.2 ms
+   100 % |  5,905,951 |   581,151 |     4 | 367.1 ms | 2108.7 ms | full |   877 | 209.8 ms | 2685.6 ms | 5371.2 ms
+refresh: min 1018.5 ms / median 1586.3 ms / max 2685.6 ms · last 2685.6 ms → the app's next refresh waits 5371.2 ms
+  full: 10 refreshes · thermal min 889.4 ms / median 1393.5 ms / max 2108.7 ms · refresh min 1018.5 ms / median 1586.3 ms / max 2685.6 ms
+gl error after replay: 0
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) · 10 chunks · after: incremental (BURN-35) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait
+    10 % |    589,824 |   589,824 |     1 |   0.6 ms |  341.3 ms | full |   701 |  31.5 ms | 373.4 ms | 746.8 ms
+    20 % |  1,179,648 |   589,824 |     1 |   0.5 ms |  380.7 ms | full |   701 |  51.1 ms | 432.3 ms | 864.6 ms
+    30 % |  1,769,472 |   589,824 |     1 |   0.4 ms |  564.7 ms | full |   526 |  78.9 ms | 644.1 ms | 1288.2 ms
+    40 % |  2,359,296 |   589,824 |     1 |   0.4 ms |  730.6 ms | full |   701 | 105.8 ms | 836.8 ms | 1673.6 ms
+    50 % |  2,965,504 |   606,208 |     1 |   0.3 ms |  294.1 ms | incr |   182 | 163.4 ms | 457.9 ms | 915.8 ms
+    60 % |  3,555,328 |   589,824 |     2 |   0.4 ms | 1167.3 ms | full |   529 | 140.0 ms | 1307.7 ms | 2615.4 ms
+    70 % |  4,145,152 |   589,824 |     2 |   0.4 ms | 1184.3 ms | full |   616 | 193.3 ms | 1378.0 ms | 2756.0 ms
+    80 % |  4,734,976 |   589,824 |     2 |   0.5 ms |  195.1 ms | incr |    90 | 188.8 ms | 384.4 ms | 768.8 ms
+    90 % |  5,324,800 |   589,824 |     4 |   0.6 ms | 1779.1 ms | full |   791 | 248.7 ms | 2028.4 ms | 4056.8 ms
+   100 % |  5,905,951 |   581,151 |     4 |   0.3 ms |  212.2 ms | incr |    88 | 268.4 ms | 480.9 ms | 961.8 ms
+refresh: min 373.4 ms / median 644.1 ms / max 2028.4 ms · last 480.9 ms → the app's next refresh waits 961.8 ms
+  incr: 3 refreshes · thermal min 195.1 ms / median 212.2 ms / max 294.1 ms · refresh min 384.4 ms / median 457.9 ms / max 480.9 ms
+  full: 7 refreshes · thermal min 341.3 ms / median 730.6 ms / max 1779.1 ms · refresh min 373.4 ms / median 836.8 ms / max 2028.4 ms
+  live thermal plan at the end: grid 254 × 254 @ 0.442 mm · bins 876 × 1280 ms (lag 1)
+  incremental vs full rerun (GPU, same store and plan): per-sample eAbs max rel Δ 0.00e+0 · dose weight max |Δ| 0.00e+0 · bulk map max |Δ| 0.000 K of 65 K, cells off by > 1 %: 0 / 64516
+gl error after replay: 0
+
+== spike job, σ 0.05 mm, 100 × 100 mm raster, birch (thermal) · 40 chunks · after: incremental (BURN-35) ==
+batches 361 · job 1121 s · 40 refreshes
+streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait
+     3 % |    147,456 |   147,456 |     1 |   2.3 ms |  736.2 ms | full |   699 |  11.9 ms | 750.4 ms | 1500.8 ms
+     5 % |    294,912 |   147,456 |     1 |   0.4 ms |  724.5 ms | full |   700 |  17.0 ms | 741.9 ms | 1483.8 ms
+     8 % |    442,368 |   147,456 |     1 |   0.2 ms |  210.5 ms | full |   526 |  20.5 ms | 231.3 ms | 462.6 ms
+    10 % |    589,824 |   147,456 |     1 |   0.3 ms |  104.1 ms | incr |   177 |  37.2 ms | 141.6 ms | 283.2 ms
+    13 % |    737,280 |   147,456 |     1 |   0.4 ms |   90.5 ms | incr |   176 |  42.3 ms | 133.2 ms | 266.4 ms
+    15 % |    884,736 |   147,456 |     1 |   0.3 ms |  357.7 ms | full |   526 |  53.4 ms | 411.4 ms | 822.8 ms
+    18 % |  1,032,192 |   147,456 |     1 |   0.5 ms |   86.8 ms | incr |    90 |  69.4 ms | 156.7 ms | 313.4 ms
+    20 % |  1,179,648 |   147,456 |     1 |   0.6 ms |  102.7 ms | incr |    89 |  65.6 ms | 168.9 ms | 337.8 ms
+    23 % |  1,327,104 |   147,456 |     1 |   0.3 ms |  574.9 ms | full |   789 |  67.4 ms | 642.6 ms | 1285.2 ms
+    25 % |  1,474,560 |   147,456 |     1 |   0.5 ms |   76.4 ms | incr |    89 |  73.2 ms | 150.1 ms | 300.2 ms
+    28 % |  1,622,016 |   147,456 |     1 |   0.3 ms |   82.1 ms | incr |    90 |  79.4 ms | 161.8 ms | 323.6 ms
+    30 % |  1,769,472 |   147,456 |     1 |   0.4 ms |  639.6 ms | full |   526 | 100.6 ms | 740.6 ms | 1481.2 ms
+    33 % |  1,916,928 |   147,456 |     1 |   0.4 ms |   89.1 ms | incr |    46 | 125.9 ms | 215.4 ms | 430.8 ms
+    35 % |  2,064,384 |   147,456 |     1 |   0.5 ms |   72.4 ms | incr |    46 | 122.5 ms | 195.4 ms | 390.8 ms
+    38 % |  2,211,840 |   147,456 |     1 |   0.5 ms |  865.1 ms | full |   658 | 139.5 ms | 1005.1 ms | 2010.2 ms
+    40 % |  2,359,296 |   147,456 |     1 |   0.3 ms |   88.0 ms | incr |    45 | 137.1 ms | 225.4 ms | 450.8 ms
+    43 % |  2,506,752 |   147,456 |     1 |   0.9 ms |   82.8 ms | incr |    46 | 136.7 ms | 220.4 ms | 440.8 ms
+    45 % |  2,654,208 |   147,456 |     1 |   0.4 ms |   71.1 ms | incr |    46 | 133.3 ms | 204.9 ms | 409.8 ms
+    48 % |  2,801,664 |   147,456 |     1 |   0.5 ms |  127.4 ms | incr |    46 | 126.0 ms | 253.9 ms | 507.8 ms
+    50 % |  2,965,504 |   163,840 |     1 |   0.3 ms |   73.5 ms | incr |    50 | 150.8 ms | 224.6 ms | 449.2 ms
+    53 % |  3,112,960 |   147,456 |     1 |   0.3 ms |   70.8 ms | incr |    46 | 167.1 ms | 238.2 ms | 476.4 ms
+    55 % |  3,260,416 |   147,456 |     2 |   0.6 ms | 1281.6 ms | full |   969 | 136.8 ms | 1419.0 ms | 2838.0 ms
+    58 % |  3,407,872 |   147,456 |     2 |   0.7 ms |   66.3 ms | incr |    45 | 137.9 ms | 204.9 ms | 409.8 ms
+    60 % |  3,555,328 |   147,456 |     2 |   0.6 ms | 1067.3 ms | full |   529 | 153.9 ms | 1221.8 ms | 2443.6 ms
+    63 % |  3,702,784 |   147,456 |     2 |   0.4 ms |   57.6 ms | incr |    24 | 159.9 ms | 217.9 ms | 435.8 ms
+    65 % |  3,850,240 |   147,456 |     2 |   0.6 ms |   51.8 ms | incr |    24 | 160.5 ms | 212.9 ms | 425.8 ms
+    68 % |  3,997,696 |   147,456 |     2 |   0.4 ms |   55.2 ms | incr |    23 | 190.7 ms | 246.3 ms | 492.6 ms
+    70 % |  4,145,152 |   147,456 |     2 |   0.3 ms | 1204.1 ms | full |   616 | 147.3 ms | 1351.7 ms | 2703.4 ms
+    73 % |  4,292,608 |   147,456 |     2 |   0.5 ms |   50.9 ms | incr |    24 | 153.4 ms | 204.8 ms | 409.6 ms
+    75 % |  4,440,064 |   147,456 |     2 |   0.4 ms |   58.4 ms | incr |    24 | 175.4 ms | 234.2 ms | 468.4 ms
+    78 % |  4,587,520 |   147,456 |     2 |   0.4 ms |   61.3 ms | incr |    24 | 206.2 ms | 267.9 ms | 535.8 ms
+    80 % |  4,734,976 |   147,456 |     2 |   0.6 ms |   68.4 ms | incr |    24 | 232.5 ms | 301.5 ms | 603.0 ms
+    83 % |  4,882,432 |   147,456 |     2 |   0.6 ms |   71.7 ms | incr |    24 | 206.9 ms | 279.2 ms | 558.4 ms
+    85 % |  5,029,888 |   147,456 |     4 |   0.5 ms | 1550.7 ms | full |   748 | 247.7 ms | 1798.9 ms | 3597.8 ms
+    88 % |  5,177,344 |   147,456 |     4 |   0.4 ms |   74.7 ms | incr |    23 | 247.0 ms | 322.1 ms | 644.2 ms
+    90 % |  5,324,800 |   147,456 |     4 |   0.6 ms |   82.5 ms | incr |    24 | 388.6 ms | 471.7 ms | 943.4 ms
+    93 % |  5,472,256 |   147,456 |     4 |   0.6 ms |   94.0 ms | incr |    24 | 458.1 ms | 552.7 ms | 1105.4 ms
+    95 % |  5,619,712 |   147,456 |     4 |   0.8 ms |  103.2 ms | incr |    24 | 344.8 ms | 448.8 ms | 897.6 ms
+    98 % |  5,767,168 |   147,456 |     4 |   0.7 ms |  108.3 ms | incr |    24 | 322.0 ms | 431.0 ms | 862.0 ms
+   100 % |  5,905,951 |   138,783 |     4 | 388.0 ms |   72.4 ms | incr |    22 | 222.8 ms | 683.3 ms | 1366.6 ms
+refresh: min 133.2 ms / median 253.9 ms / max 1798.9 ms · last 683.3 ms → the app's next refresh waits 1366.6 ms
+  incr: 29 refreshes · thermal min 50.9 ms / median 74.7 ms / max 127.4 ms · refresh min 133.2 ms / median 224.6 ms / max 683.3 ms
+  full: 11 refreshes · thermal min 210.5 ms / median 736.2 ms / max 1550.7 ms · refresh min 231.3 ms / median 750.4 ms / max 1798.9 ms
+  live thermal plan at the end: grid 254 × 254 @ 0.442 mm · bins 876 × 1280 ms (lag 1)
+  incremental vs full rerun (GPU, same store and plan): per-sample eAbs max rel Δ 0.00e+0 · dose weight max |Δ| 0.00e+0 · bulk map max |Δ| 0.000 K of 65 K, cells off by > 1 %: 0 / 64516
+gl error after replay: 0
+
+== spike job, fluence only (no thermal step) · 10 chunks · after: incremental (BURN-35) ==
+batches 361 · job 1121 s · 10 refreshes
+streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait
+    10 % |    589,824 |   589,824 |     1 |   0.1 ms |    1.9 ms |    - |     - |  93.5 ms |  95.5 ms | 191.0 ms
+    20 % |  1,179,648 |   589,824 |     1 |   0.1 ms |    4.1 ms |    - |     - |  60.5 ms |  64.7 ms | 129.4 ms
+    30 % |  1,769,472 |   589,824 |     1 |   0.1 ms |    4.3 ms |    - |     - |  63.1 ms |  67.5 ms | 135.0 ms
+    40 % |  2,359,296 |   589,824 |     1 |   0.1 ms |   16.1 ms |    - |     - |  84.5 ms | 100.7 ms | 201.4 ms
+    50 % |  2,965,504 |   606,208 |     1 |   0.1 ms |    4.5 ms |    - |     - | 116.5 ms | 121.1 ms | 242.2 ms
+    60 % |  3,555,328 |   589,824 |     1 |   0.3 ms |    5.1 ms |    - |     - | 185.6 ms | 191.0 ms | 382.0 ms
+    70 % |  4,145,152 |   589,824 |     1 |   0.2 ms |    6.1 ms |    - |     - | 244.4 ms | 250.7 ms | 501.4 ms
+    80 % |  4,734,976 |   589,824 |     2 |   0.0 ms |    6.6 ms |    - |     - | 261.7 ms | 268.3 ms | 536.6 ms
+    90 % |  5,324,800 |   589,824 |     4 |   0.2 ms |    5.9 ms |    - |     - | 291.6 ms | 297.7 ms | 595.4 ms
+   100 % |  5,905,951 |   581,151 |     4 |   0.0 ms |    6.3 ms |    - |     - | 356.9 ms | 363.2 ms | 726.4 ms
+refresh: min 64.7 ms / median 191.0 ms / max 363.2 ms · last 363.2 ms → the app's next refresh waits 726.4 ms
+gl error after replay: 0
+
+== spike job, fluence only (no thermal step) · 40 chunks · after: incremental (BURN-35) ==
+batches 361 · job 1121 s · 40 refreshes
+streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait
+     3 % |    147,456 |   147,456 |     1 |   0.3 ms |    0.8 ms |    - |     - |  37.2 ms |  38.3 ms | 100.0 ms
+     5 % |    294,912 |   147,456 |     1 |   0.1 ms |    3.4 ms |    - |     - |  40.9 ms |  44.4 ms | 100.0 ms
+     8 % |    442,368 |   147,456 |     1 |   0.2 ms |    3.0 ms |    - |     - |  53.4 ms |  56.6 ms | 113.2 ms
+    10 % |    589,824 |   147,456 |     1 |   0.1 ms |    2.7 ms |    - |     - |  65.6 ms |  68.4 ms | 136.8 ms
+    13 % |    737,280 |   147,456 |     1 |   0.1 ms |    2.5 ms |    - |     - |  76.1 ms |  78.7 ms | 157.4 ms
+    15 % |    884,736 |   147,456 |     1 |   0.0 ms |    2.6 ms |    - |     - |  85.5 ms |  88.1 ms | 176.2 ms
+    18 % |  1,032,192 |   147,456 |     1 |   0.1 ms |    4.5 ms |    - |     - |  95.7 ms | 100.3 ms | 200.6 ms
+    20 % |  1,179,648 |   147,456 |     1 |   0.1 ms |    2.4 ms |    - |     - |  99.8 ms | 102.3 ms | 204.6 ms
+    23 % |  1,327,104 |   147,456 |     1 |   0.1 ms |    2.9 ms |    - |     - | 118.1 ms | 121.1 ms | 242.2 ms
+    25 % |  1,474,560 |   147,456 |     1 |   0.5 ms |    4.0 ms |    - |     - | 260.0 ms | 264.5 ms | 529.0 ms
+    28 % |  1,622,016 |   147,456 |     1 |   0.1 ms |    5.2 ms |    - |     - | 225.1 ms | 230.4 ms | 460.8 ms
+    30 % |  1,769,472 |   147,456 |     1 |   0.1 ms |    6.1 ms |    - |     - | 273.0 ms | 279.2 ms | 558.4 ms
+    33 % |  1,916,928 |   147,456 |     1 |   0.3 ms |    6.6 ms |    - |     - | 334.2 ms | 341.1 ms | 682.2 ms
+    35 % |  2,064,384 |   147,456 |     1 |   0.4 ms |    5.2 ms |    - |     - | 317.7 ms | 323.3 ms | 646.6 ms
+    38 % |  2,211,840 |   147,456 |     1 |   0.2 ms |    4.8 ms |    - |     - | 193.6 ms | 198.6 ms | 397.2 ms
+    40 % |  2,359,296 |   147,456 |     1 |   0.4 ms |    6.4 ms |    - |     - | 361.8 ms | 368.6 ms | 737.2 ms
+    43 % |  2,506,752 |   147,456 |     1 |   0.3 ms |    6.2 ms |    - |     - | 421.4 ms | 427.9 ms | 855.8 ms
+    45 % |  2,654,208 |   147,456 |     1 |   0.4 ms |    6.9 ms |    - |     - | 428.3 ms | 435.6 ms | 871.2 ms
+    48 % |  2,801,664 |   147,456 |     1 |   0.1 ms |    6.9 ms |    - |     - | 391.7 ms | 398.8 ms | 797.6 ms
+    50 % |  2,965,504 |   163,840 |     1 |   0.3 ms |    4.7 ms |    - |     - | 228.7 ms | 233.7 ms | 467.4 ms
+    53 % |  3,112,960 |   147,456 |     1 |   0.4 ms |    4.5 ms |    - |     - | 191.5 ms | 196.4 ms | 392.8 ms
+    55 % |  3,260,416 |   147,456 |     1 |   0.1 ms |    4.4 ms |    - |     - | 218.6 ms | 223.1 ms | 446.2 ms
+    58 % |  3,407,872 |   147,456 |     1 |   0.1 ms |    5.2 ms |    - |     - | 242.4 ms | 247.7 ms | 495.4 ms
+    60 % |  3,555,328 |   147,456 |     1 |   0.1 ms |    4.6 ms |    - |     - | 213.4 ms | 218.1 ms | 436.2 ms
+    63 % |  3,702,784 |   147,456 |     1 |   0.1 ms |    3.5 ms |    - |     - | 214.9 ms | 218.5 ms | 437.0 ms
+    65 % |  3,850,240 |   147,456 |     1 |   0.1 ms |    3.3 ms |    - |     - | 248.6 ms | 252.0 ms | 504.0 ms
+    68 % |  3,997,696 |   147,456 |     1 |   0.0 ms |    4.0 ms |    - |     - | 277.3 ms | 281.3 ms | 562.6 ms
+    70 % |  4,145,152 |   147,456 |     2 |   0.2 ms |    3.4 ms |    - |     - | 240.5 ms | 244.1 ms | 488.2 ms
+    73 % |  4,292,608 |   147,456 |     2 |   0.0 ms |    3.6 ms |    - |     - | 208.6 ms | 212.2 ms | 424.4 ms
+    75 % |  4,440,064 |   147,456 |     1 |   0.3 ms |    2.7 ms |    - |     - | 210.6 ms | 213.6 ms | 427.2 ms
+    78 % |  4,587,520 |   147,456 |     1 |   0.1 ms |    2.9 ms |    - |     - | 229.9 ms | 232.9 ms | 465.8 ms
+    80 % |  4,734,976 |   147,456 |     1 |   0.2 ms |    3.6 ms |    - |     - | 249.0 ms | 252.8 ms | 505.6 ms
+    83 % |  4,882,432 |   147,456 |     2 |   0.2 ms |    3.4 ms |    - |     - | 244.4 ms | 248.0 ms | 496.0 ms
+    85 % |  5,029,888 |   147,456 |     2 |   0.1 ms |    2.4 ms |    - |     - | 246.4 ms | 248.9 ms | 497.8 ms
+    88 % |  5,177,344 |   147,456 |     2 |   0.1 ms |    3.4 ms |    - |     - | 236.8 ms | 240.3 ms | 480.6 ms
+    90 % |  5,324,800 |   147,456 |     4 |   0.1 ms |    2.7 ms |    - |     - | 218.2 ms | 221.0 ms | 442.0 ms
+    93 % |  5,472,256 |   147,456 |     4 |   0.1 ms |    3.6 ms |    - |     - | 228.9 ms | 232.6 ms | 465.2 ms
+    95 % |  5,619,712 |   147,456 |     4 |   0.2 ms |    2.3 ms |    - |     - | 246.8 ms | 249.3 ms | 498.6 ms
+    98 % |  5,767,168 |   147,456 |     4 |   0.1 ms |    2.4 ms |    - |     - | 292.9 ms | 295.4 ms | 590.8 ms
+   100 % |  5,905,951 |   138,783 |     4 |   0.1 ms |    2.6 ms |    - |     - | 318.5 ms | 321.2 ms | 642.4 ms
+refresh: min 38.3 ms / median 233.7 ms / max 435.6 ms · last 321.2 ms → the app's next refresh waits 642.4 ms
+gl error after replay: 0
+
+== provisional diode, 5 µm pitch, 100 × 100 mm raster, birch (thermal) · 10 chunks · before: full thermal rerun every refresh ==
+batches 1202 · job 1121 s · 10 refreshes
+streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait
+    10 % |  1,966,080 | 1,966,080 |     4 | 150.9 ms | 1163.6 ms | full |   700 | 150.9 ms | 1465.4 ms | 2930.8 ms
+    20 % |  3,932,160 | 1,966,080 |     8 | 207.8 ms | 2023.4 ms | full |   701 | 205.1 ms | 2436.3 ms | 4872.6 ms
+    30 % |  5,914,624 | 1,982,464 |     8 | 302.2 ms | 2076.9 ms | full |   528 | 272.4 ms | 2651.5 ms | 5303.0 ms
+    40 % |  7,880,704 | 1,966,080 |    10 | 421.1 ms | 2352.8 ms | full |   703 | 454.8 ms | 3228.7 ms | 6457.4 ms
+    50 % |  9,846,784 | 1,966,080 |    15 | 625.0 ms | 3104.4 ms | full |   878 | 565.8 ms | 4295.2 ms | 8590.4 ms
+    60 % | 11,812,864 | 1,966,080 |    24 | 618.5 ms | 3672.6 ms | full |   527 | 621.9 ms | 4913.0 ms | 9826.0 ms
+    70 % | 13,778,944 | 1,966,080 |    48 | 857.9 ms | 4186.5 ms | full |   615 | 864.8 ms | 5909.2 ms | 11818.4 ms
+    80 % | 15,761,408 | 1,982,464 |    80 | 990.7 ms | 4026.5 ms | full |   703 | 904.4 ms | 5921.6 ms | 11843.2 ms
+    90 % | 17,727,488 | 1,966,080 |   255 | 952.8 ms | 6202.6 ms | full |   790 | 851.6 ms | 8007.2 ms | 16014.4 ms
+   100 % | 19,688,836 | 1,961,348 |   441 | 1729.0 ms | 7104.0 ms | full |   877 | 1077.9 ms | 9910.9 ms | 19821.8 ms
+refresh: min 1465.4 ms / median 4913.0 ms / max 9910.9 ms · last 9910.9 ms → the app's next refresh waits 19821.8 ms
+  full: 10 refreshes · thermal min 1163.6 ms / median 3672.6 ms / max 7104.0 ms · refresh min 1465.4 ms / median 4913.0 ms / max 9910.9 ms
+gl error after replay: 0
+
+== provisional diode, 5 µm pitch, 100 × 100 mm raster, birch (thermal) · 10 chunks · after: incremental (BURN-35) ==
+batches 1202 · job 1121 s · 10 refreshes
+streamed | samples    | new       | tiles | setup    | thermal   | path | bins  | coarse   | refresh  | next wait
+    10 % |  1,966,080 | 1,966,080 |     5 | 209.5 ms | 1420.5 ms | full |   700 | 229.3 ms | 1859.3 ms | 3718.6 ms
+    20 % |  3,932,160 | 1,966,080 |    10 | 514.2 ms | 2745.3 ms | full |   701 | 384.4 ms | 3643.9 ms | 7287.8 ms
+    30 % |  5,914,624 | 1,982,464 |    10 | 316.7 ms | 2017.5 ms | full |   528 | 270.1 ms | 2604.3 ms | 5208.6 ms
+    40 % |  7,880,704 | 1,966,080 |    18 | 388.0 ms | 2083.2 ms | full |   703 | 429.2 ms | 2900.4 ms | 5800.8 ms
+    50 % |  9,846,784 | 1,966,080 |    18 | 435.0 ms |  442.1 ms | incr |   177 | 478.8 ms | 1355.9 ms | 2711.8 ms
+    60 % | 11,812,864 | 1,966,080 |    28 | 759.5 ms | 3179.9 ms | full |   527 | 599.7 ms | 4539.1 ms | 9078.2 ms
+    70 % | 13,778,944 | 1,966,080 |    48 | 793.5 ms | 3928.5 ms | full |   615 | 604.0 ms | 5326.0 ms | 10652.0 ms
+    80 % | 15,761,408 | 1,982,464 |    72 | 723.8 ms |  467.9 ms | incr |    90 | 843.1 ms | 2034.8 ms | 4069.6 ms
+FAILED: GlContextLostError: WebGL context lost before the thermal result was read back
+gl error: 0
