@@ -130,7 +130,8 @@ void main() {
 }`
 
 /**
- * Gather: one point per sample (gl_VertexID is the store index). Reads the
+ * Gather: one point per sample (u_base + gl_VertexID is the store index: the
+ * samples are drawn from a chunk of the store starting at u_base). Reads the
  * top layer (state plus spread fresh heat) and the accumulated dose bilinearly.
  * u_final = false writes (bulk, dose) to the `pre` texture at index − u_binFirst.
  * u_final = true blends with `pre` by the sample's bin fraction and writes
@@ -148,6 +149,7 @@ uniform bool u_hasFresh;
 uniform highp sampler2D u_fresh;
 uniform ivec4 u_freshRect;
 uniform int u_binFirst;
+uniform int u_base;
 uniform bool u_final;
 uniform ivec2 u_outSize;
 uniform float u_absorption;
@@ -201,7 +203,7 @@ void main() {
   vec2 f = cellCoord(a_xye.xy);
   float bulk = gatherBulk(f);
   float dose = gatherDose(f);
-  int i = gl_VertexID;
+  int i = u_base + gl_VertexID;
   if (!u_final) {
     v_out = vec2(bulk, dose);
     gl_Position = atTexel(perSampleTexel(i - u_binFirst), u_outSize);
@@ -225,7 +227,8 @@ out vec4 o;
 void main() { o = vec4(v_out, 0.0, 0.0); }`
 
 /**
- * Bulk map: one point per sample at its thermal cell, MAX-blended. The bulk
+ * Bulk map: one point per sample at its thermal cell, MAX-blended (store index
+ * u_base + gl_VertexID, as in the gather). The bulk
  * temperature it gathered is recovered from its energies:
  * eDose / eAbs = flash + bulk · bulkGain / a, with a = eAbs / E.
  */
@@ -235,10 +238,11 @@ precision highp int;
 layout(location = 0) in vec3 a_xye;
 layout(location = 1) in vec3 a_static;
 uniform highp sampler2D u_perSample;
+uniform int u_base;
 ${GRID}
 out float v_bulk;
 void main() {
-  vec2 e = texelFetch(u_perSample, perSampleTexel(gl_VertexID), 0).rg;
+  vec2 e = texelFetch(u_perSample, perSampleTexel(u_base + gl_VertexID), 0).rg;
   bool ok = e.x > 0.0 && a_static.y > 0.0;
   v_bulk = ok ? (e.y / e.x - a_static.x) * (e.x / a_xye.z) / a_static.y : 0.0;
   ivec2 c = clamp(ivec2(floor((a_xye.xy - u_origin) * u_invPitch)), ivec2(0), u_gridSize - 1);

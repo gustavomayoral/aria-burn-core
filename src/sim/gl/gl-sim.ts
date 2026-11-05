@@ -432,7 +432,7 @@ export class GlSim {
     gl.bindVertexArray(null)
     // The thermal deposit's index attribute is an integer; its generic value must be one too.
     gl.vertexAttribI4ui(1, 0, 0, 0, 0)
-    this.thermalStep = floatBlend ? new GlPeakTemperatureStep(gl, () => this.sampleBuffer) : null
+    this.thermalStep = floatBlend ? new GlPeakTemperatureStep(gl) : null
   }
 
   /**
@@ -498,7 +498,10 @@ export class GlSim {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleBuffer)
     if (store.count > this.sampleCapacity) {
       this.sampleCapacity = Math.max(store.count, Math.ceil(this.sampleCapacity * 1.5), 4096)
-      gl.bufferData(gl.ARRAY_BUFFER, this.sampleCapacity * 12, gl.DYNAMIC_DRAW)
+      // STATIC_DRAW even though live jobs append (BURN-38): ANGLE D3D11 binds a static buffer directly, but
+      // streams a dynamic one's drawn range into a renamed buffer on every draw (coarse and unbinned runs
+      // draw millions of samples at once), which costs the GPU process far more than the buffer.
+      gl.bufferData(gl.ARRAY_BUFFER, this.sampleCapacity * 12, gl.STATIC_DRAW)
       trackBuffer(gl, this.sampleBuffer, this.sampleCapacity * 12)
       this.uploadedCount = 0
     }
@@ -686,10 +689,12 @@ export class GlSim {
       this.dropWindowBins()
       this.bins = new SampleBins(store, bucketMm)
       this.binStore = store
+      // DYNAMIC_DRAW (BURN-38): bins are drawn a bucket range at a time, and ANGLE D3D11 streams just those
+      // ranges from a dynamic buffer, where a static one costs twice its size (a staging copy) once drawn.
       gl.bindBuffer(gl.ARRAY_BUFFER, this.binBuffer)
-      gl.bufferData(gl.ARRAY_BUFFER, this.bins.xye, gl.STATIC_DRAW)
+      gl.bufferData(gl.ARRAY_BUFFER, this.bins.xye, gl.DYNAMIC_DRAW)
       gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
-      gl.bufferData(gl.ARRAY_BUFFER, this.bins.index, gl.STATIC_DRAW)
+      gl.bufferData(gl.ARRAY_BUFFER, this.bins.index, gl.DYNAMIC_DRAW)
       trackBuffer(gl, this.binBuffer, this.bins.xye.byteLength)
       trackBuffer(gl, this.binIndexBuffer, this.bins.index.byteLength)
     }
@@ -730,9 +735,9 @@ export class GlSim {
     const bins = new SampleBins(store, bucketMm, window)
     const gl = this.gl
     gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, bins.xye, gl.STATIC_DRAW)
+    gl.bufferData(gl.ARRAY_BUFFER, bins.xye, gl.DYNAMIC_DRAW)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinIndexBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, bins.index, gl.STATIC_DRAW)
+    gl.bufferData(gl.ARRAY_BUFFER, bins.index, gl.DYNAMIC_DRAW)
     trackBuffer(gl, this.windowBinBuffer, bins.xye.byteLength)
     trackBuffer(gl, this.windowBinIndexBuffer, bins.index.byteLength)
     this.windowBins = bins

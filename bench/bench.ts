@@ -332,6 +332,18 @@ async function runFine(): Promise<void> {
   ;(window as unknown as { __benchFine: string }).__benchFine = lines.join('\n')
 }
 
+/** FNV-1a over the bits of float arrays: results identical bit for bit hash the same (BURN-38 chunked thermal step). */
+function bitsHash(...arrays: Float32Array[]): string {
+  let h = 0x811c9dc5
+  for (const a of arrays) {
+    const u = new Uint32Array(a.buffer, a.byteOffset, a.length)
+    for (let i = 0; i < u.length; i++) h = Math.imul(h ^ u[i]!, 0x01000193) >>> 0
+  }
+  return h.toString(16).padStart(8, '0')
+}
+const thermalHash = (t: { eAbs: Float32Array; eDose: Float32Array; bulkK?: Float32Array | null }) =>
+  `per-sample ${bitsHash(t.eAbs, t.eDose)} · bulk map ${t.bulkK ? bitsHash(t.bulkK) : '-'}`
+
 /** COD-258: the thermal step on the GPU against the CPU reference, and what it costs. */
 async function runThermal(): Promise<void> {
   lines.length = 0
@@ -352,6 +364,7 @@ async function runThermal(): Promise<void> {
   const p = gpuT.plan!
   log(`samples ${small.store.count.toLocaleString()} · job ${small.plan.durationS.toFixed(1)} s · thermal grid ${p.grid.width} × ${p.grid.height} @ ${p.grid.pitchMm.toFixed(3)} mm · bins ${p.binCount} × ${(p.binS * 1000).toFixed(1)} ms (lag ${p.lagBins}) · active ${gpuT.activeBins}`)
   log(`CPU reference ${ms(cpuMs)} · GPU ${ms(gpuT.gpuMs)} (incl. readback)`)
+  log(`  GPU result bits: ${thermalHash(gpuT)}`)
   let maxA = 0
   let maxW = 0
   let maxB = 0
@@ -406,6 +419,7 @@ async function runThermal(): Promise<void> {
     log(`thermal step (once per job/material, incl. statics and readback): ${stats(thermalRuns.map((r) => r.gpuMs))}`)
     const tm = thermalRuns[thermalRuns.length - 1]!.timing
     log(`  last run: CPU statics ${ms(tm.staticsMs)} · GPU bin loop ${ms(tm.loopMs)} · readback + bulk map ${ms(tm.readbackMs)}`)
+    log(`  GPU result bits: ${thermalHash(thermalRuns[thermalRuns.length - 1]!)}`)
     // Warm full-res with the thermal result cached: the per-run cost of depositing dose.
     const first = timedRun(() => sim.run(job.store, withT, { overview })).ms
     const warm: number[] = []

@@ -8,6 +8,14 @@
 // a fresh-heat texture, gather again) and two lateral passes that spread the
 // fresh heat, scissored to the few cells around the injected samples.
 //
+// The samples and their static attributes reach the GPU in chunks of whole
+// bins (BURN-38): one bounded vertex buffer, re-filled from the store as the
+// loop moves on, instead of the whole sample buffer beside a whole-job statics
+// buffer. On WebView2 / ANGLE D3D11 a big vertex buffer costs twice its size
+// once drawn from (a staging copy), and a DYNAMIC_DRAW one is streamed into a
+// renamed buffer on every draw, which took the GPU process ~1 GB over its
+// resting size during a 5 µm job's step; a chunk caps both.
+//
 // The per-sample (eAbs, eDose) texture stays on the GPU for the fine deposit
 // (GlSim looks samples up by store index); the CPU arrays are read back only
 // when something asks for them (the hover readout). The bulk map is built on
@@ -40,7 +48,7 @@ import {
   type ThermalStep,
 } from '../thermal.ts'
 import { sameThermalPlan, type PeakTemperatureModel, type ThermalPlan } from '../../contract/index.ts'
-import { GlContextLostError, Program, deleteTexture, framebuffer, target, texture, type Target } from './gl-util.ts'
+import { GlContextLostError, Program, deleteTexture, framebuffer, target, texture, trackBuffer, type Target } from './gl-util.ts'
 import { FULLSCREEN_VS } from './shaders.ts'
 import {
   PER_SAMPLE_WIDTH,
@@ -73,6 +81,11 @@ type Rect = [x0: number, y0: number, x1: number, y1: number]
 /** Spare capacity for per-sample buffers of a live run (BURN-35): regrowing them re-uploads everything. */
 const LIVE_HEADROOM = 1.25
 
+/** Samples per chunk of the vertex buffer (BURN-38): 24 MiB at 6 floats a sample; grown only for a wider bin. */
+export const THERMAL_CHUNK_SAMPLES = 1 << 20
+/** Floats per sample in a chunk: x, y, energy, then flash factor, bulk gain, bin fraction. */
+const CHUNK_STRIDE = 6
+
 /**
  * The GPU step's state between calls (BURN-35): the textures of the last run
  * and what it needs to continue over appended samples — bin starts, statics,
@@ -90,9 +103,8 @@ interface GlResume {
   memo: StaticsMemo
   flash: Float32Array
   bulkGain: Float32Array
-  /** CPU copy of the static attribute buffer (flash, bulk gain, bin fraction per sample) and its GPU capacity (samples). */
+  /** Static attributes per sample (flash, bulk gain, bin fraction), uploaded with the samples a chunk at a time. */
   statics: Float32Array
-  staticsCap: number
   s0: Target
   s1: Target
   fresh: Target
@@ -131,7 +143,11 @@ export class GlPeakTemperatureStep implements ThermalStep {
   private readonly gather: Program
   private readonly vao: WebGLVertexArrayObject
   private readonly emptyVao: WebGLVertexArrayObject
-  private readonly staticBuffer: WebGLBuffer
+  /** The chunk of samples on the GPU: interleaved (x, y, E, flash, bulk gain, bin fraction), store indices [chunkFrom, chunkTo). */
+  private readonly chunkBuffer: WebGLBuffer
+  private chunkCap = 0
+  private chunkFrom = 0
+  private chunkTo = 0
   private readonly tapTextures = new Map<string, WebGLTexture>()
   private owned: WebGLTexture[] = []
   private ownedFbos: WebGLFramebuffer[] = []
@@ -141,18 +157,21 @@ export class GlPeakTemperatureStep implements ThermalStep {
   private materialize: (() => unknown) | null = null
   private readonly bulkProgram: Program
 
-  constructor(
-    readonly gl: WebGL2RenderingContext,
-    /** The sample buffer GlSim keeps in sync with the store (interleaved x, y, E). */
-    private readonly sampleBuffer: () => WebGLBuffer,
-  ) {
+  constructor(readonly gl: WebGL2RenderingContext) {
     this.diffuse = new Program(gl, FULLSCREEN_VS, THERMAL_DIFFUSE_FS)
     this.inject = new Program(gl, THERMAL_INJECT_VS, THERMAL_INJECT_FS)
     this.gather = new Program(gl, THERMAL_GATHER_VS, THERMAL_GATHER_FS)
     this.bulkProgram = new Program(gl, THERMAL_BULK_VS, THERMAL_BULK_FS)
     this.vao = gl.createVertexArray()!
     this.emptyVao = gl.createVertexArray()!
-    this.staticBuffer = gl.createBuffer()!
+    this.chunkBuffer = gl.createBuffer()!
+    gl.bindVertexArray(this.vao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
+    gl.enableVertexAttribArray(0)
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, 0)
+    gl.enableVertexAttribArray(1)
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, 12)
+    gl.bindVertexArray(null)
   }
 
   /** Free the textures of the last run (the per-sample texture of its result included). */
@@ -166,6 +185,49 @@ export class GlPeakTemperatureStep implements ThermalStep {
     this.ownedFbos = []
     this.current = null
     this.resume = null
+    this.dropChunk()
+  }
+
+  /** Free the chunk buffer (it is refilled on the next run). */
+  private dropChunk(): void {
+    if (!this.chunkCap) return
+    const gl = this.gl
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
+    trackBuffer(gl, this.chunkBuffer, 0)
+    this.chunkCap = this.chunkFrom = this.chunkTo = 0
+  }
+
+  /**
+   * Make store indices [lo, hi) available in the chunk buffer, refilling it
+   * from lo (as far as it holds) when they aren't all there. Returns the
+   * store index of the chunk's first sample.
+   */
+  private chunk(store: SampleStore, statics: Float32Array, lo: number, hi: number): number {
+    if (lo >= this.chunkFrom && hi <= this.chunkTo) return this.chunkFrom
+    const gl = this.gl
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
+    if (hi - lo > this.chunkCap) {
+      // STATIC_DRAW: ANGLE D3D11 binds it directly; a DYNAMIC_DRAW buffer is streamed on every draw.
+      this.chunkCap = Math.max(THERMAL_CHUNK_SAMPLES, hi - lo)
+      gl.bufferData(gl.ARRAY_BUFFER, this.chunkCap * CHUNK_STRIDE * 4, gl.STATIC_DRAW)
+      trackBuffer(gl, this.chunkBuffer, this.chunkCap * CHUNK_STRIDE * 4)
+    }
+    const to = Math.min(store.count, lo + this.chunkCap)
+    const data = new Float32Array((to - lo) * CHUNK_STRIDE)
+    const { xye } = store
+    for (let i = lo, o = 0; i < to; i++, o += CHUNK_STRIDE) {
+      data[o] = xye[i * 3]!
+      data[o + 1] = xye[i * 3 + 1]!
+      data[o + 2] = xye[i * 3 + 2]!
+      data[o + 3] = statics[i * 3]!
+      data[o + 4] = statics[i * 3 + 1]!
+      data[o + 5] = statics[i * 3 + 2]!
+    }
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
+    this.chunkFrom = lo
+    this.chunkTo = to
+    return lo
   }
 
   private taps(alpha: number, dt: number, pitch: number): { tex: WebGLTexture; radius: number } {
@@ -231,7 +293,6 @@ export class GlPeakTemperatureStep implements ThermalStep {
       flash: new Float32Array(cap),
       bulkGain: new Float32Array(cap),
       statics: new Float32Array(cap * 3),
-      staticsCap: 0,
       s0,
       s1,
       fresh,
@@ -362,21 +423,8 @@ export class GlPeakTemperatureStep implements ThermalStep {
         statics[i * 3 + 2] = binFraction(store.tS[i]!, k, plan.binS)
       }
     const t1 = performance.now()
-    gl.bindVertexArray(this.vao)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleBuffer())
-    gl.enableVertexAttribArray(0)
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0)
-    gl.vertexAttribDivisor(0, 0)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.staticBuffer)
-    if (n > r.staticsCap) {
-      // (Re)allocate with the CPU copy's headroom and upload all of it.
-      r.staticsCap = statics.length / 3
-      gl.bufferData(gl.ARRAY_BUFFER, statics, gl.DYNAMIC_DRAW)
-    } else gl.bufferSubData(gl.ARRAY_BUFFER, first * 12, statics, first * 3, (n - first) * 3)
-    gl.enableVertexAttribArray(1)
-    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 12, 0)
-    gl.vertexAttribDivisor(1, 0)
-    gl.bindVertexArray(null)
+    // The chunk holds this store's samples as of this call; statics from `first` on just changed.
+    this.chunkFrom = this.chunkTo = 0
 
     let widest = 1
     for (let k = fromBin; k < plan.binCount; k++) widest = Math.max(widest, binStart[k + 1]! - binStart[k]!)
@@ -449,7 +497,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
       r.freshRect = null
     }
 
-    const runGather = (first: number, count: number, final: boolean) => {
+    const runGather = (first: number, count: number, final: boolean, base: number) => {
       gl.disable(gl.BLEND)
       const out = final ? perSample : pre
       gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo)
@@ -470,6 +518,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
         .i('u_fresh', 3)
         .i('u_hasFresh', r.freshRect ? 1 : 0)
         .i('u_binFirst', first)
+        .i('u_base', base)
         .i('u_final', final ? 1 : 0)
         .i('u_outSize', PER_SAMPLE_WIDTH, final ? rows : r.preRows)
         .f('u_absorption', material.absorption)
@@ -479,12 +528,12 @@ export class GlPeakTemperatureStep implements ThermalStep {
         .f('u_rampEnd', ramp.rampEnd)
         .f('u_gamma', ramp.gamma)
       if (r.freshRect) p.i4('u_freshRect', ...r.freshRect)
-      gl.drawArrays(gl.POINTS, first, count)
+      gl.drawArrays(gl.POINTS, first - base, count)
     }
 
     const zero = new Float32Array(4)
     /** Inject [first, first + count) into the fresh texture (and dose), then spread it laterally inside its rect. */
-    const runInject = (first: number, count: number) => {
+    const runInject = (first: number, count: number, base: number) => {
       // The rect the spread heat can reach: the bilinear footprint plus the spread taps.
       let cx0 = Infinity
       let cy0 = Infinity
@@ -511,10 +560,10 @@ export class GlPeakTemperatureStep implements ThermalStep {
       gl.enable(gl.BLEND)
       gl.blendEquation(gl.FUNC_ADD)
       gl.blendFunc(gl.ONE, gl.ONE)
-      // Instanced: the sample attribute steps per instance, from `first`.
+      // Instanced: the sample attribute steps per instance, from `first` (chunk-relative offset).
       gl.bindVertexArray(this.vao)
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleBuffer())
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, first * 12)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.chunkBuffer)
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, (first - base) * CHUNK_STRIDE * 4)
       gl.vertexAttribDivisor(0, 1)
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, perSample.tex)
@@ -524,7 +573,7 @@ export class GlPeakTemperatureStep implements ThermalStep {
         .f('u_layerScale', layerScale[0]!, layerScale[1]!, layerScale[2]!, layerScale[3]!)
         .f('u_invArea', 1 / area)
       gl.drawArraysInstanced(gl.POINTS, 0, 4, count)
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0)
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, CHUNK_STRIDE * 4, 0)
       gl.vertexAttribDivisor(0, 0)
       gl.disable(gl.BLEND)
       gl.bindVertexArray(this.emptyVao)
@@ -553,9 +602,13 @@ export class GlPeakTemperatureStep implements ThermalStep {
       if (injTo > injFrom || gatTo > gatFrom) {
         activeBins++
         flush()
-        if (gatTo > gatFrom) runGather(gatFrom, gatTo - gatFrom, false)
-        if (injTo > injFrom) runInject(injFrom, injTo - injFrom)
-        if (gatTo > gatFrom) runGather(gatFrom, gatTo - gatFrom, true)
+        // The lagged bin injected and the bin gathered, in one chunk (injection's bin comes first).
+        const lo = injTo > injFrom ? injFrom : gatFrom
+        const hi = gatTo > gatFrom ? gatTo : injTo
+        const base = this.chunk(store, statics, lo, hi)
+        if (gatTo > gatFrom) runGather(gatFrom, gatTo - gatFrom, false, base)
+        if (injTo > injFrom) runInject(injFrom, injTo - injFrom, base)
+        if (gatTo > gatFrom) runGather(gatFrom, gatTo - gatFrom, true, base)
       }
       if (r.live) r.pending += plan.binS
     }
@@ -571,7 +624,14 @@ export class GlPeakTemperatureStep implements ThermalStep {
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, perSample.tex)
     gridUniforms(this.bulkProgram.use()).i('u_perSample', 0)
-    gl.drawArrays(gl.POINTS, first, n - first)
+    // MAX blend: chunk order doesn't matter. Starts with the chunk the loop left, if it is in range.
+    for (let lo = first; lo < n; ) {
+      const base = lo >= this.chunkFrom && lo < this.chunkTo ? this.chunkFrom : this.chunk(store, statics, lo, Math.min(n, lo + 1))
+      const hi = Math.min(n, this.chunkTo)
+      this.bulkProgram.i('u_base', base)
+      gl.drawArrays(gl.POINTS, lo - base, hi - lo)
+      lo = hi
+    }
     gl.blendEquation(gl.FUNC_ADD)
     gl.disable(gl.BLEND)
     gl.bindVertexArray(null)
