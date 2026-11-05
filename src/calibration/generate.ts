@@ -2,8 +2,7 @@
 // Places a pattern on the bed, adds registration fiducials around it, and
 // writes its G-code and job model.
 //
-// Adding a pattern (BURN-47: firing threshold, focus height, scan offset):
-// write a PatternGenerator in patterns.ts, add its kind to PatternKind and
+// Adding a pattern: write a PatternGenerator in patterns.ts, add its kind to PatternKind and
 // PATTERNS. Placement, fiducials, the bed check and the cell records come from
 // here; the catalog-wide tests (calibration.test.ts here, the parser and
 // planner check in aria-burn) pick it up from PATTERNS.
@@ -150,6 +149,12 @@ export function generatePattern(kind: PatternKind, machine: MachineProfile, mate
   const tp = new Toolpath(ctx)
   tp.comment(`Aria Burn calibration pattern: ${draft.title}`)
   tp.comment(`kind ${kind} v1, machine ${machine.name}, material ${material.id}`)
+  if (gen.measures) tp.comment(`measures ${gen.measures.on}.${gen.measures.field}${gen.measures.inContract ? '' : ' (not in the contract yet)'}`)
+  if (kind === 'focus-height') {
+    const z = opts.zMode === 'z-axis'
+    tp.comment(z ? 'Z: relative steps (G91 G0 Z) on a motorised Z, + = head up; the job ends at the Z it started at.' : 'Z: no Z is commanded. The job pauses (M0) before each line; move the head as the comment says, then resume.')
+    tp.comment('Start with the head focused on the work surface as usual.')
+  }
   for (const c of cells) {
     const s = c.settings
     const r = c.rectMm
@@ -173,6 +178,8 @@ export function generatePattern(kind: PatternKind, machine: MachineProfile, mate
     version: 1,
     kind,
     title: draft.title,
+    pick: gen.pick ?? 'best-cell',
+    ...(gen.measures ? { measures: { ...gen.measures } } : {}),
     options: draft.options,
     machine: machineInfo(ctx),
     material: { id: material.id, name: material.name, kind: material.response.kind, absorption: material.absorption },

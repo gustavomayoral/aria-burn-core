@@ -7,8 +7,12 @@
 // written only when they change, coordinates to 0.001 mm and S to 0.1. No
 // comment uses LightBurn's pass forms ("… @ … mm/…", "Pass n"), so the parser
 // keeps the job as one pass.
+//
+// The focus pattern (BURN-47) also writes program pauses (M0) or relative Z
+// steps (G91 G0 Z…, then G90). The v1 parser ignores both with a warning, once
+// per code at its first line; the job model carries the same warnings.
 
-import { CONTRACT_VERSION, type BoundsMm, type JobModel, type LaserMode, type Move } from '../contract/index.ts'
+import { CONTRACT_VERSION, type BoundsMm, type Diagnostic, type JobModel, type LaserMode, type Move } from '../contract/index.ts'
 import type { PatternContext } from './context.ts'
 import { PatternFitError, type CellSettings, type ScanAxis } from './types.ts'
 
@@ -41,6 +45,9 @@ export class Toolpath {
   private oy = 0
   private readonly ext = { minXMm: Infinity, minYMm: Infinity, maxXMm: -Infinity, maxYMm: -Infinity }
   private readonly burnExt = { minXMm: Infinity, minYMm: Infinity, maxXMm: -Infinity, maxYMm: -Infinity }
+  private readonly diagnostics: Diagnostic[] = []
+  /** Net relative Z written so far (mm); the focus pattern returns it to 0. */
+  private zNet = 0
 
   /**
    * `measure` builds without the bed check, to find a pattern's extent in its
@@ -100,6 +107,41 @@ export class Toolpath {
     const { x: bx, y: by } = this.ctx.bedMm
     if (x < -1e-9 || y < -1e-9 || x > bx + 1e-9 || y > by + 1e-9)
       throw new PatternFitError(`move to (${fmt(x)}, ${fmt(y)}) mm is outside the ${fmt(bx)} × ${fmt(by)} mm bed`)
+  }
+
+  /** The parser's v1 warning for a code, once, at the line just written. */
+  private warnOnce(code: string, message: string): void {
+    if (!this.diagnostics.some((d) => d.code === code)) this.diagnostics.push({ severity: 'warning', code, message, line: this.lines.length })
+  }
+
+  /**
+   * Program pause with the beam off: M5, a comment saying what to do, M0, then
+   * M4 S0 again. The operator resumes (cycle start) when done.
+   */
+  pause(instruction: string): void {
+    this.lines.push('M5 S0')
+    this.laser = 'off'
+    this.s = 0
+    this.comment(`PAUSE: ${instruction}`)
+    this.lines.push('M0')
+    this.warnOnce('ignored-pause', 'Program pause (M0/M1) is ignored')
+    this.lines.push('M4 S0')
+    this.laser = 'm4'
+  }
+
+  /** A relative Z step (mm, + = head up), as a rapid with the beam off; back to absolute mode after. */
+  zStep(dzMm: number): void {
+    const dz = snap(dzMm)
+    if (dz === 0) return
+    this.lines.push(`G91 G0 Z${fmt(dz)}`)
+    this.warnOnce('ignored-z', 'Z moves are ignored in v1')
+    this.lines.push('G90')
+    this.zNet = snap(this.zNet + dz)
+  }
+
+  /** Net relative Z written so far (mm). */
+  get zOffsetMm(): number {
+    return this.zNet
   }
 
   rapid(x: number, y: number): void {
@@ -223,7 +265,7 @@ export class Toolpath {
       passes: moves.length ? [{ index: 0, firstMove: 0, moveCount: moves.length }] : [],
       bounds: all,
       burnBounds: burn,
-      diagnostics: [],
+      diagnostics: this.diagnostics.map((d) => ({ ...d })),
     }
   }
 }

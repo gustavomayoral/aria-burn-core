@@ -18,16 +18,28 @@ import {
   fractionForPower,
   labelSettings,
   lineForEnergy,
+  lineSettings,
   materialMid,
   materialRange,
   overscanMm,
   powerAt,
   spotDiameterMm,
+  strokeSigmaMm,
   type PatternContext,
 } from './context.ts'
 import { textStrokes, textWidthMm } from './font.ts'
 import type { Toolpath } from './toolpath.ts'
-import { PatternFitError, type CellSettings, type PatternCell, type PatternKind, type PatternMark, type ScanAxis } from './types.ts'
+import {
+  PatternFitError,
+  type CellSettings,
+  type FocusZMode,
+  type PatternCell,
+  type PatternKind,
+  type PatternMark,
+  type PatternMeasures,
+  type PatternPick,
+  type ScanAxis,
+} from './types.ts'
 
 /** A pattern laid out in local mm, before placement. */
 export interface PatternDraft {
@@ -43,6 +55,10 @@ export interface PatternGenerator<O extends object = Record<string, unknown>> {
   title: string
   /** One line for the UI: what the pattern shows. */
   summary: string
+  /** What picking on the burn means. Default 'best-cell'. */
+  pick?: PatternPick
+  /** The profile value the pattern measures (BURN-47's measurement patterns). */
+  measures?: PatternMeasures
   /** Options with every default filled in for this machine and material. */
   defaults(ctx: PatternContext): O
   /** Lays the pattern out. `scale` (≤ 1) shrinks sizes when the full layout doesn't fit the bed. */
@@ -581,6 +597,299 @@ export const marksPattern: PatternGenerator<MarksOptions> = {
   },
 }
 
+// ── 7. Firing threshold (BURN-47) ─────────────────────────────────────
+
+export interface FiringThresholdOptions {
+  /** One line per power, % of $30, top to bottom (rising). */
+  powersPct: number[]
+  /** One slow feed for every line (mm/min), so a line marks as soon as the diode emits at all. */
+  feedMmPerMin: number
+  lineMm: number
+  pitchMm: number
+  labelMm: number
+}
+
+/**
+ * Where the module's curve leaves zero, as a fraction of $30: the s of the
+ * last point with zero power before the first point with power. 0 when the
+ * curve rises from s = 0.
+ */
+export function curveFloor(ctx: PatternContext): number {
+  const c = ctx.machine.powerCurve
+  let floor = 0
+  for (const p of c) {
+    if (p.power > 0) break
+    floor = p.s
+  }
+  return floor
+}
+
+/** A stroke's clickable record: the line from (x0, y) to (x1, y), as wide as the spot. */
+const strokeRect = (ctx: PatternContext, x0: number, x1: number, y: number) => {
+  const h = spotDiameterMm(ctx) / 2
+  return rect(x0, y - h, x1, y + h)
+}
+
+export const firingThresholdPattern: PatternGenerator<FiringThresholdOptions> = {
+  kind: 'firing-threshold',
+  title: 'Firing threshold',
+  summary: 'Lines at rising low power, slowly. The first line that marks is where the diode starts to emit: the bottom of the power curve.',
+  pick: 'first-visible',
+  measures: {
+    on: 'LaserModule',
+    field: 'powerCurve',
+    profileField: 'MachineProfile.powerCurve',
+    inContract: true,
+    reads: 'The S of the first line that marks is where powerCurve leaves power 0; below it the diode does not emit.',
+  },
+  defaults(ctx) {
+    const floor = curveFloor(ctx)
+    // From well under the curve's current floor to well over it, so a real floor either side shows.
+    const lo = Math.max(0.005, floor * 0.4)
+    const hi = Math.min(1, Math.max(0.08, floor * 2.5))
+    const pcts = [...new Set(linear(lo * 100, hi * 100, 16).map((p) => Math.round(p * 10) / 10))]
+    // Slow enough that 1 % of full power, on the centre line, reaches the material's mark threshold.
+    const p1 = ctx.machine.opticalPowerW * 0.01
+    const v = (p1 / (materialRange(ctx).lo * Math.sqrt(2 * Math.PI) * strokeSigmaMm(ctx))) * 60
+    const feed = tidyFeed(Math.max(MIN_FEED_MM_PER_MIN, Math.min(1000, v, axisRate(ctx, 'x'))))
+    return { powersPct: pcts, feedMmPerMin: feed, lineMm: 20, pitchMm: 2.5, labelMm: 1.6 }
+  },
+  build(ctx, o, scale) {
+    const lh = Math.max(1.2, o.labelMm * Math.max(scale, 0.75))
+    const pitch = Math.max(lh + 0.4, o.pitchMm * scale)
+    const len = Math.max(8, o.lineMm * scale)
+    const gap = 1.5
+    // One decimal on every label: the steps are fractions of a percent.
+    const labels = o.powersPct.map((p) => p.toFixed(1))
+    const x0 = Math.max(...labels.map((t) => textWidthMm(t, lh)), textWidthMm('S%', lh)) + gap
+    const cells: PatternCell[] = o.powersPct.map((pct, i) => {
+      const y = -i * pitch
+      const settings = lineSettings(ctx, pct / 100, o.feedMmPerMin)
+      return {
+        id: `t${i + 1}`,
+        label: `${settings.powerPct.toFixed(1)}% S${settings.s}`,
+        rectMm: strokeRect(ctx, x0, x0 + len, y),
+        settings,
+        row: i,
+        group: 'threshold',
+        extra: { sFraction: r3(settings.s / ctx.machine.sMax), curveFloor: curveFloor(ctx) },
+      }
+    })
+    return {
+      title: this.title,
+      options: { ...o },
+      cells,
+      marks: [],
+      draw(tp) {
+        for (const k of cells) {
+          const y = (k.rectMm.minYMm + k.rectMm.maxYMm) / 2
+          tp.strokes([[[k.rectMm.minXMm, y], [k.rectMm.maxXMm, y]]], k.settings)
+        }
+        cells.forEach((k, i) => label(tp, ctx, labels[i]!, x0 - gap, (k.rectMm.minYMm + k.rectMm.maxYMm - lh) / 2, lh, 'end'))
+        label(tp, ctx, 'S%', x0 - gap, pitch * 0.5 + 0.5, lh, 'end')
+        label(tp, ctx, `F${fmtFeed(o.feedMmPerMin)}`, x0, pitch * 0.5 + 0.5, lh)
+      },
+    }
+  },
+}
+
+// ── 8. Focus height (BURN-47) ─────────────────────────────────────────
+
+/** Largest Z offset from focus the focus pattern accepts (mm), either way. */
+export const MAX_FOCUS_OFFSET_MM = 5
+/** Smallest step between neighbouring offsets (mm). */
+export const MIN_FOCUS_STEP_MM = 0.1
+
+export interface FocusHeightOptions {
+  /**
+   * Z offsets from the focus the head is at when the job starts (mm, + = head
+   * up, away from the work), burned top to bottom in this order.
+   */
+  zOffsetsMm: number[]
+  /**
+   * pause (default): the job stops (M0) before each line and the operator moves
+   * the head; no Z is commanded, so it is safe on frames with manual focus.
+   * z-axis: small relative steps (G91 G0 Z…) on a motorised Z; the job ends
+   * where it started.
+   */
+  zMode: FocusZMode
+  powerPct: number
+  feedMmPerMin: number
+  lineMm: number
+  pitchMm: number
+  labelMm: number
+}
+
+const fmtZ = (z: number) => (Math.abs(z) < 1e-9 ? '0' : `${z > 0 ? '+' : '-'}${Math.abs(z).toFixed(Math.abs(z * 10) % 1 > 1e-6 ? 2 : 1)}`)
+
+/** Throws unless the offsets are small, distinct and stepped at least MIN_FOCUS_STEP_MM apart. */
+export function checkFocusOffsets(z: readonly number[]): void {
+  if (!z.length) throw new RangeError('Focus height needs at least one Z offset')
+  for (const v of z)
+    if (!Number.isFinite(v) || Math.abs(v) > MAX_FOCUS_OFFSET_MM) throw new RangeError(`Z offset ${v} mm is outside ±${MAX_FOCUS_OFFSET_MM} mm of focus`)
+  const sorted = [...z].sort((a, b) => a - b)
+  for (let i = 1; i < sorted.length; i++)
+    if (sorted[i]! - sorted[i - 1]! < MIN_FOCUS_STEP_MM - 1e-9) throw new RangeError(`Z offsets must be at least ${MIN_FOCUS_STEP_MM} mm apart`)
+}
+
+export const focusHeightPattern: PatternGenerator<FocusHeightOptions> = {
+  kind: 'focus-height',
+  title: 'Focus height',
+  summary:
+    'One line per Z offset around focus, labelled in mm (+ = head up). The thinnest line is best focus; the widths give spot size against defocus. Pauses for you to move the head unless set to a motorised Z.',
+  pick: 'thinnest',
+  measures: {
+    on: 'LaserModule',
+    field: 'spot',
+    profileField: 'MachineProfile.spot',
+    inContract: true,
+    reads: 'The thinnest line marks best focus; its width is about the spot’s 1/e² diameter (spot.minorDiameterMm across the line). The other widths give spot size against defocus.',
+  },
+  defaults(ctx) {
+    const feed = tidyFeed(Math.max(MIN_FEED_MM_PER_MIN, Math.min(1500, axisRate(ctx, 'x'))))
+    const s = lineForEnergy(ctx, materialMid(ctx), feed)
+    return {
+      zOffsetsMm: linear(2, -2, 9).map((z) => Math.round(z * 100) / 100),
+      zMode: 'pause' as FocusZMode,
+      powerPct: s.powerPct,
+      feedMmPerMin: tidyFeed(s.feedMmPerMin),
+      lineMm: 20,
+      pitchMm: 3,
+      labelMm: 1.6,
+    }
+  },
+  build(ctx, o, scale) {
+    checkFocusOffsets(o.zOffsetsMm)
+    if (o.zMode !== 'pause' && o.zMode !== 'z-axis') throw new RangeError(`zMode must be pause or z-axis, not ${String(o.zMode)}`)
+    const lh = Math.max(1.2, o.labelMm * Math.max(scale, 0.75))
+    const pitch = Math.max(lh + 0.6, o.pitchMm * scale)
+    const len = Math.max(8, o.lineMm * scale)
+    const gap = 1.5
+    const settings = lineSettings(ctx, o.powerPct / 100, o.feedMmPerMin)
+    const labels = o.zOffsetsMm.map(fmtZ)
+    const x0 = Math.max(...labels.map((t) => textWidthMm(t, lh)), textWidthMm('Z MM', lh)) + gap
+    const cells: PatternCell[] = o.zOffsetsMm.map((z, i) => ({
+      id: `z${i + 1}`,
+      label: `Z ${fmtZ(z)} mm`,
+      rectMm: strokeRect(ctx, x0, x0 + len, -i * pitch),
+      settings,
+      row: i,
+      group: 'focus',
+      extra: { zOffsetMm: z },
+    }))
+    const where = (z: number) => (Math.abs(z) < 1e-9 ? 'at focus' : `${Math.abs(z)} mm ${z > 0 ? 'above' : 'below'} focus`)
+    return {
+      title: this.title,
+      options: { ...o },
+      cells,
+      marks: [],
+      draw(tp) {
+        // Labels first, at the focus the job starts at, so they read whatever the lines do.
+        cells.forEach((k, i) => label(tp, ctx, labels[i]!, x0 - gap, -i * pitch - lh / 2, lh, 'end'))
+        label(tp, ctx, 'Z MM', x0 - gap, pitch * 0.5 + 0.5, lh, 'end')
+        label(tp, ctx, `S${fmtPct(settings.powerPct)} F${fmtFeed(settings.feedMmPerMin)}`, x0, pitch * 0.5 + 0.5, lh)
+        let z = 0
+        cells.forEach((k, i) => {
+          const target = o.zOffsetsMm[i]!
+          const dz = Math.round((target - z) * 1000) / 1000
+          if (o.zMode === 'z-axis') tp.zStep(dz)
+          else if (dz !== 0)
+            tp.pause(`move the head ${Math.abs(dz)} mm ${dz > 0 ? 'UP' : 'DOWN'} to Z ${fmtZ(target)} mm (${where(target)}), then resume`)
+          z = target
+          const y = -i * pitch
+          tp.strokes([[[x0, y], [x0 + len, y]]], k.settings)
+        })
+        // Back to the starting focus before anything else is burned.
+        if (o.zMode === 'z-axis') tp.zStep(-z)
+        else if (Math.abs(z) > 1e-9) tp.pause(`move the head ${Math.abs(z)} mm ${z > 0 ? 'DOWN' : 'UP'} back to focus, then resume`)
+      },
+    }
+  },
+}
+
+// ── 9. Scan offset (BURN-47) ──────────────────────────────────────────
+
+export interface ScanOffsetOptions {
+  /** One strip per feed (mm/min), top to bottom. */
+  feedsMmPerMin: number[]
+  /** Strip length along the scan (X) and height across it (mm). */
+  stripMm: number
+  stripHeightMm: number
+  /** Scan line spacing: wide enough that single lines and their ends stay apart (mm). */
+  intervalMm: number
+  /** Centre-line energy of each scan line (incident J/mm²); power follows the feed. */
+  energyJPerMm2: number
+  gapMm: number
+  labelMm: number
+}
+
+export const scanOffsetPattern: PatternGenerator<ScanOffsetOptions> = {
+  kind: 'scan-offset',
+  title: 'Scan offset',
+  summary:
+    'Bidirectional strips at rising speed with sparse lines and ticks at the programmed ends. Forward and back lines end apart by the scan offset at that speed.',
+  pick: 'shift',
+  measures: {
+    on: 'MachineFrame',
+    field: 'scanOffsetMm',
+    inContract: false,
+    reads:
+      'At each feed, the distance between where forward and back lines end at the same strip edge (the comb at either end; the ticks mark the programmed edge). The contract has no field for it yet: scanOffsetMm per feed is the proposed name.',
+  },
+  defaults(ctx) {
+    const cap = fillFeedCap(ctx, 'x')
+    const slow = Math.max(MIN_FEED_MM_PER_MIN, Math.min(1000, cap / 8))
+    const feeds = [...new Set(geometric(slow, cap, 5).map(tidyFeed))]
+    const interval = Math.min(0.5, Math.max(0.2, Math.round((spotDiameterMm(ctx) * 4) / 0.05) * 0.05))
+    return { feedsMmPerMin: feeds, stripMm: 20, stripHeightMm: 3, intervalMm: r3(interval), energyJPerMm2: r3(materialMid(ctx)), gapMm: 4, labelMm: 1.6 }
+  },
+  build(ctx, o, scale) {
+    const lh = Math.max(1.2, o.labelMm * Math.max(scale, 0.75))
+    const len = Math.max(10, o.stripMm * scale)
+    const h = Math.max(o.intervalMm * 4, o.stripHeightMm * scale)
+    const gap = Math.max(3.5, o.gapMm * scale)
+    const labels = o.feedsMmPerMin.map((f) => `F${fmtFeed(f)}`)
+    const x0 = Math.max(...labels.map((t) => textWidthMm(t, lh))) + 2
+    const width = Math.sqrt(2 * Math.PI) * strokeSigmaMm(ctx)
+    const cells: PatternCell[] = o.feedsMmPerMin.map((feed, r) => {
+      const p = o.energyJPerMm2 * (feed / 60) * width
+      const fraction = Math.min(1, Math.max(DEFAULT_MIN_POWER_FRACTION, fractionForPower(ctx, Math.min(p, ctx.machine.opticalPowerW)) ?? 1))
+      const y1 = -r * (h + gap)
+      return {
+        id: `f${r + 1}`,
+        label: `${fmtFeed(feed)} mm/min`,
+        rectMm: rect(x0, y1 - h, x0 + len, y1),
+        settings: fillSettings(ctx, fraction, feed, o.intervalMm, 'x'),
+        row: r,
+        group: 'scan-x',
+        extra: { feedMmPerMin: feed },
+      }
+    })
+    const tick = Math.min(1.2, gap / 2 - 0.6)
+    return {
+      title: this.title,
+      options: { ...o },
+      cells,
+      marks: [],
+      draw(tp) {
+        for (const k of cells) fillCell(tp, ctx, k)
+        // Ticks across the scan at the programmed ends, above and below each strip: vector strokes along Y, which the X scan lag doesn't move.
+        const ticks: Path[] = []
+        for (const k of cells) {
+          const { minXMm: a, maxXMm: b, minYMm: lo, maxYMm: hi } = k.rectMm
+          for (const x of [a, b]) {
+            ticks.push([[x, hi + 0.4], [x, hi + 0.4 + tick]])
+            ticks.push([[x, lo - 0.4], [x, lo - 0.4 - tick]])
+          }
+        }
+        tp.strokes(ticks, labelSettings(ctx))
+        cells.forEach((k, r) => label(tp, ctx, labels[r]!, x0 - 2, (k.rectMm.minYMm + k.rectMm.maxYMm - lh) / 2, lh, 'end'))
+        label(tp, ctx, 'SCAN X', x0, 0.4 + tick + 1, lh)
+      },
+    }
+  },
+}
+
 export const PATTERNS = {
   grid: gridPattern,
   'equal-energy': equalEnergyPattern,
@@ -588,4 +897,7 @@ export const PATTERNS = {
   corners: cornersPattern,
   'fill-size': fillSizePattern,
   marks: marksPattern,
+  'firing-threshold': firingThresholdPattern,
+  'focus-height': focusHeightPattern,
+  'scan-offset': scanOffsetPattern,
 } satisfies Record<PatternKind, PatternGenerator<any>>

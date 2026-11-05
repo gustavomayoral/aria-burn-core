@@ -12,7 +12,9 @@ import { CATALOG_FRAMES, modulesForFrame } from '../profiles/catalog/index.ts'
 import { interimSampler, loadMachineProfile, loadMaterialProfile } from '../sim/index.ts'
 import {
   FONT_CHARS,
+  MAX_FOCUS_OFFSET_MM,
   MIN_FEED_MM_PER_MIN,
+  curveFloor,
   PATTERN_KINDS,
   PatternFitError,
   cellAt,
@@ -47,7 +49,7 @@ function burns(moves: readonly Move[]): { x0: number; y0: number; m: Move }[] {
   return out
 }
 
-const LINE = /^(; .*|G21 G90|M4 S0|M5 S0|M2|G0 X-?\d+(\.\d+)? Y-?\d+(\.\d+)?|G1 X\d+(\.\d+)? Y\d+(\.\d+)?( F\d+)?( S\d+(\.\d)?)?)$/
+const LINE = /^(; .*|G21 G90|M4 S0|M5 S0|M2|M0|G90|G91 G0 Z-?\d+(\.\d+)?|G0 X-?\d+(\.\d+)? Y-?\d+(\.\d+)?|G1 X\d+(\.\d+)? Y\d+(\.\d+)?( F\d+)?( S\d+(\.\d)?)?)$/
 
 function checkPattern(p: CalibrationPattern, machine: MachineProfile) {
   const ctx = patternContext(machine, MATERIALS[0]!)
@@ -184,6 +186,7 @@ describe('overscan', () => {
       ['line-interval', { cellMm: 3 }],
       ['fill-size', { sizesMm: [2, 5] }],
       ['marks', { patchMm: 3 }],
+      ['scan-offset', { feedsMmPerMin: [1000, 6000], stripMm: 6, stripHeightMm: 1 }],
     ]
     for (const [kind, pattern] of small) {
       const p = generatePattern(kind, machine, MATERIALS[0]!, { pattern })
@@ -232,6 +235,93 @@ describe('marks', () => {
     for (let i = 1; i < e.length; i++) expect(e[i]!).toBeGreaterThan(e[i - 1]!)
     for (const c of p.cells) expect(Math.abs(c.settings.energyJPerMm2 - (c.extra!.targetEnergyJPerMm2 as number)) / c.settings.energyJPerMm2).toBeLessThan(0.05)
     expect(p.marks.map((m) => m.kind).sort()).toEqual(['card', 'fiducial', 'fiducial', 'fiducial', 'fiducial', 'orientation', 'scale'])
+  })
+})
+
+describe('measurement patterns (BURN-47)', () => {
+  const zOf = (gcode: string) => gcode.split('\n').filter((l) => l.startsWith('G91 G0 Z')).map((l) => Number(l.slice(8)))
+
+  it('each says which contract field it measures and how it is picked', () => {
+    const want = {
+      'firing-threshold': ['first-visible', 'LaserModule', 'powerCurve', true],
+      'focus-height': ['thinnest', 'LaserModule', 'spot', true],
+      'scan-offset': ['shift', 'MachineFrame', 'scanOffsetMm', false],
+    } as const
+    for (const [kind, [pick, on, field, inContract]] of Object.entries(want)) {
+      const p = generatePattern(kind as PatternKind, DEFAULT_MACHINE, MATERIALS[0]!)
+      expect(p.pick).toBe(pick)
+      expect(p.measures).toMatchObject({ on, field, inContract })
+      expect(p.gcode).toContain(`; measures ${on}.${field}`)
+    }
+    expect(generatePattern('grid', DEFAULT_MACHINE, MATERIALS[0]!).pick).toBe('best-cell')
+  })
+
+  it('firing threshold: rising low power at one slow feed, across the curve floor', () => {
+    for (const { machine } of PAIRS) {
+      const p = generatePattern('firing-threshold', machine, MATERIALS[0]!)
+      const s = p.cells.map((c) => c.settings.s)
+      for (let i = 1; i < s.length; i++) expect(s[i]!).toBeGreaterThan(s[i - 1]!)
+      expect(new Set(p.cells.map((c) => c.settings.feedMmPerMin)).size).toBe(1)
+      const floor = curveFloor(patternContext(machine, MATERIALS[0]!))
+      if (floor > 0) {
+        expect(s[0]! / machine.sMax).toBeLessThan(floor)
+        expect(s[s.length - 1]! / machine.sMax).toBeGreaterThan(floor)
+      }
+      expect(p.cells.every((c) => c.settings.op === 'line')).toBe(true)
+    }
+  })
+
+  it('focus height pauses by default and commands no Z', () => {
+    const p = generatePattern('focus-height', DEFAULT_MACHINE, MATERIALS[0]!)
+    expect(p.options.zMode).toBe('pause')
+    expect(zOf(p.gcode)).toEqual([])
+    const z = p.cells.map((c) => c.extra!.zOffsetMm as number)
+    // One pause per change of Z, plus one back to focus; the beam is off (M5) before each.
+    const lines = p.gcode.split('\n')
+    const pauses = lines.flatMap((l, i) => (l === 'M0' ? [i] : []))
+    expect(pauses).toHaveLength(z.filter((v, i) => v !== (i ? z[i - 1] : 0)).length + (z[z.length - 1] !== 0 ? 1 : 0))
+    for (const i of pauses) expect(lines[i - 2]).toBe('M5 S0')
+    expect(p.job.diagnostics.map((d) => d.code)).toEqual(['ignored-pause'])
+    expect(p.cells.map((c) => c.label)).toContain('Z 0 mm')
+  })
+
+  it('focus height on a motorised Z: small relative steps that return to the start', () => {
+    const p = generatePattern('focus-height', DEFAULT_MACHINE, MATERIALS[0]!, { pattern: { zMode: 'z-axis' } })
+    const steps = zOf(p.gcode)
+    expect(steps.reduce((a, b) => a + b, 0)).toBeCloseTo(0, 9)
+    let z = 0
+    for (const d of steps) {
+      z += d
+      expect(Math.abs(z)).toBeLessThanOrEqual(MAX_FOCUS_OFFSET_MM)
+    }
+    // The first step raises the head (away from the work); every G91 is followed by G90.
+    expect(steps[0]!).toBeGreaterThan(0)
+    const lines = p.gcode.split('\n')
+    lines.forEach((l, i) => l.startsWith('G91') && expect(lines[i + 1]).toBe('G90'))
+    expect(p.job.diagnostics.map((d) => [d.code, lines[d.line - 1]!.startsWith('G91 G0 Z')])).toEqual([['ignored-z', true]])
+    expect(() => generatePattern('focus-height', DEFAULT_MACHINE, MATERIALS[0]!, { pattern: { zOffsetsMm: [0, 8] } })).toThrow(RangeError)
+    expect(() => generatePattern('focus-height', DEFAULT_MACHINE, MATERIALS[0]!, { pattern: { zOffsetsMm: [0, 0.05] } })).toThrow(RangeError)
+  })
+
+  it('scan offset: one bidirectional strip per feed, rising, with ticks at the programmed ends', () => {
+    for (const { machine } of PAIRS) {
+      const p = generatePattern('scan-offset', machine, MATERIALS[0]!)
+      const f = p.cells.map((c) => c.settings.feedMmPerMin)
+      for (let i = 1; i < f.length; i++) expect(f[i]!).toBeGreaterThan(f[i - 1]!)
+      expect(f.length).toBeGreaterThanOrEqual(3)
+      for (const c of p.cells) {
+        expect(c.settings.scan).toBe('x')
+        // Sparse lines: at least two spot diameters apart, so line ends stay apart.
+        expect(c.settings.intervalMm!).toBeGreaterThanOrEqual(2 * 4 * Math.min(machine.spot.sigmaXMm, machine.spot.sigmaYMm) - 1e-9)
+        // Both directions burn in the strip.
+        const dirs = new Set(
+          burns(p.job.moves)
+            .filter(({ x0, y0, m }) => inside(x0, y0, c.rectMm, 1e-3) && inside(m.xMm, m.yMm, c.rectMm, 1e-3))
+            .map(({ x0, m }) => Math.sign(m.xMm - x0)),
+        )
+        expect([...dirs].sort()).toEqual([-1, 1])
+      }
+    }
   })
 })
 

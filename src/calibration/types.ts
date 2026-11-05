@@ -9,8 +9,44 @@
 
 import type { BoundsMm, JobModel, LaserMode, Vec2Mm } from '../contract/index.ts'
 
-/** Pattern kinds. BURN-47 adds firing threshold, focus height and scan offset. */
-export type PatternKind = 'grid' | 'equal-energy' | 'line-interval' | 'corners' | 'fill-size' | 'marks'
+/** Pattern kinds. BURN-47 added firing threshold, focus height and scan offset. */
+export type PatternKind =
+  | 'grid'
+  | 'equal-energy'
+  | 'line-interval'
+  | 'corners'
+  | 'fill-size'
+  | 'marks'
+  | 'firing-threshold'
+  | 'focus-height'
+  | 'scan-offset'
+
+/**
+ * What "pick" means on the burned pattern: the best-looking cell (a material
+ * setting), the first line that marked, the thinnest line, or a strip whose
+ * forward/back shift the user measures.
+ */
+export type PatternPick = 'best-cell' | 'first-visible' | 'thinnest' | 'shift'
+
+/**
+ * The machine-profile or laser-source value a pattern measures (BURN-47), by
+ * its name in the contract. `inContract` is false when the contract has no
+ * field for it yet; `field` is then the name it is proposed under.
+ */
+export interface PatternMeasures {
+  /** Contract type the value belongs to. */
+  on: 'LaserModule' | 'MachineFrame' | 'MachineProfile'
+  /** Field name on that type, e.g. "powerCurve". */
+  field: string
+  /** The same value on the combined MachineProfile, e.g. "MachineProfile.powerCurve". */
+  profileField?: string
+  inContract: boolean
+  /** How the burn gives the value, one or two sentences. */
+  reads: string
+}
+
+/** Focus pattern: how the head gets to each Z offset. */
+export type FocusZMode = 'pause' | 'z-axis'
 
 /** Scan axis of a raster fill: lines run along machine X or machine Y. */
 export type ScanAxis = 'x' | 'y'
@@ -81,6 +117,10 @@ export interface CalibrationPattern {
   version: 1
   kind: PatternKind
   title: string
+  /** What picking on the burned pattern means (see PatternPick). */
+  pick: PatternPick
+  /** The profile value the pattern measures, for the measurement patterns (BURN-47). */
+  measures?: PatternMeasures
   /** The options the pattern was generated from, after defaults and fitting to the bed. */
   options: Record<string, unknown>
   machine: PatternMachineInfo
