@@ -1,0 +1,58 @@
+BURN-42 live-job pitch in the real Aria Burn app — macOS 14.6.1, WKWebView ("Apple GPU"), Apple M1,
+on AC power, run 2026-11-04. NOT Windows/Iris Xe. Job cell budget 256 M (JOB_CELL_BUDGET_LARGE).
+
+What was measured: the job grid's pitch (SimSetup.grid.pitchMm) at every live refresh, while a
+G-code file streams into the app's GRBL TCP emulator, against the same file opened from disk.
+- Job: the 100 mm bench raster (BURN-35's job) as G-code: 100 × 100 mm at (10, 10), bidirectional,
+  0.1 mm line interval, 1001 lines, G1 F6000 M4 S300, 2007 lines in all. Provisional 10 W diode,
+  σ 0.03 × 0.015 mm → 5 µm detail pitch, 410 × 400 mm travel; birch (thermal).
+- Sender: a Node script streaming like LightBurn/LaserGRBL's buffered mode (character counting
+  against GRBL's 128-byte RX buffer, one line per ok), emulator pacing "real time", so the stream
+  takes as long as the job (~1093 s).
+- App: aria-burn `pnpm tauri dev` (debug Rust, vite dev server) linked to aria-burn-core main.
+  Two local, uncommitted bench patches: setGrid POSTs every grid to the dev server, and
+  VITE_EMULATOR_PORT=2323 overrides the saved emulator port (23 can't be bound from the sandbox).
+- Clean run: the stream started after 30 s with no vitest / cargo / rustc / tsc process, and a
+  watcher saw none during it. An earlier run of the same stream overlapped another session's
+  cargo test / vitest for its first 42 s and was discarded; its pitch timeline was identical
+  (5 µm until 702.9 s / 12,633,910 samples, then 10 µm, 10 µm at job.loaded).
+
+Summary:
+
+                                   pitch              grid at the end      steps while streaming
+  before (core 55236e9)            30 µm (k = 6)      -                    none; 30 → loaded pitch at job.loaded
+  after (core f477672), streamed   5 µm → 10 µm       10,020 × 10,020      one, at 703 s (64 % of the job)
+  after, at job.loaded             10 µm              10,020 × 10,020      no change
+  same file opened from disk       10 µm (k = 2)      10,020 × 10,020      -
+
+- Before: k came from the travel area (410 × 400 mm at 5 µm ≈ 6.6 G cells against 256 M), so the
+  stream ran at 30 µm from the first refresh (the before run was stopped after ~1 min of the
+  stream; every refresh logged 30 µm, 3334 cells across the 100 mm width).
+- After: k comes from the bounds so far. The raster has its full 100 mm width from the first line
+  and grows downward; it stays at the 5 µm detail pitch until the 5 µm grid would pass 256 M cells
+  (20,000 × 12,760 = 255 M at y = 73.6 mm), then steps once to 10 µm and stays there. The stream
+  ends on exactly the file's pitch and grid, so job.loaded changes nothing.
+- The live refresh itself runs on the coarse scrub grid (≤ 1024 cells a side, ~98 µm here), so its
+  cost doesn't depend on k; the step rebuilds the job grid and coarse checkpoints the same way bounds
+  growth does on every refresh. The live thermal plan doesn't depend on k (aria-burn-core
+  thermal-live.test.ts checks a stream with k steps stays bit-for-bit equal to a full run).
+- Screenshot: burn-42-live-pitch-macos-m1.png, the clean run at line 1,597 (10.0 µm, detail 5.0 µm).
+
+Pitch over time, clean run (one row per ~100 s, plus the step and job.loaded; the last row is
+after GlSim.fit replanned the loaded job's tiles):
+
+   t (s)    samples   bounds y (mm)   pitch   grid            tiles  loaded
+     0.0       1357  10.0..10.0      5.0 µm   1439 x 40       1    False
+   100.1    1800209  10.0..19.1      5.0 µm  20000 x 1860     3    False
+   200.1    3598532  10.0..28.2      5.0 µm  20000 x 3680     3    False
+   300.1    5396386  10.0..37.2      5.0 µm  20000 x 5480     3    False
+   400.1    7192744  10.0..46.3      5.0 µm  20000 x 7300     6    False
+   500.0    8988326  10.0..55.4      5.0 µm  20000 x 9120     6    False
+   600.1   10786401  10.0..64.5      5.0 µm  20000 x 10940    6    False
+   700.0   12582081  10.0..73.6      5.0 µm  20000 x 12760    6    False
+   703.1   12635899  10.0..73.9     10.0 µm  10001 x 6410     2    False  <- k step
+   800.1   14373574  10.0..82.6     10.0 µm  10001 x 7280     2    False
+   900.1   16169301  10.0..91.7     10.0 µm  10001 x 8190     4    False
+  1000.1   17966422  10.0..100.8    10.0 µm  10001 x 9100     4    False
+  1094.2   19790776  10.0..110.0    10.0 µm  10020 x 10020    4    True  <- job.loaded
+  1116.4   19790776  10.0..110.0    10.0 µm  10020 x 10020    9    True
