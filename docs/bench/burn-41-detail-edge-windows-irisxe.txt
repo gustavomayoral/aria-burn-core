@@ -1,0 +1,65 @@
+BURN-41 first-detail-run bench in Edge on Windows / Intel Iris Xe, run 2026-11-05.
+aria-burn-core main at 85d07d7 (BURN-41 code a801505, bench 55236e9)
+Windows 11 Home 26H2 (10.0.26300.9818) · Edge 156.0.4314.58 · WebView2 Runtime 156.0.4314.58
+GPU Intel Iris Xe Graphics (0x9A49), driver 30.0.101.1191, ANGLE / Direct3D 11 · 16 GB RAM, on AC power
+Bench server `npx vite bench --port 5299 --strictPort`. Edge started on the logged-in desktop, foreground,
+fresh profile: msedge --user-data-dir=C:\temp\edge-burn41 --no-first-run --new-window http://localhost:5299/?auto=detail
+
+Result: FAIL overall, but the numbers are not clean. The laptop was short of RAM during both runs (other
+apps held ~11 GB): free RAM fell to 7 MiB in run 1 and stayed at 0.6-1.3 GB in run 2, with the Edge GPU
+process at up to 3350 MiB shared GPU memory. Everything that moves data was slow: fit 41.4 s / 15.8 s,
+full run 7.9 s / 6.6 s, thermal re-upload 6.2 s / 3.5 s (245 ms on M1).
+  PASS app sequence, first detail: 838 ms (run 1), 1156 ms (run 2) - multi-tile plan (7 x 7), whole-job bins from fit
+  FAIL after releaseTargets (BURN-37 sequence), first detail: 7982 ms / 6994 ms
+       (before BURN-41 the same run is 11967 / 6019 ms; window bins replace 5.5 / 2.3 s of whole-job bins)
+  PASS window bins: detail readback bit-identical to whole-job bins (6 rects/cutoffs, both runs)
+Warm pans: median 96-116 ms, far pans median 123-173 ms.
+Rerun with several GB more free RAM before reading the releaseTargets number as the code's cost.
+
+=== run 1: Edge, fresh profile (machine thrashing, min 7 MiB free RAM) ===
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 7 × 7 · fit 41416.8 ms (thermal step + whole-job bins: multi-tile plan) · full run 7901.9 ms
+app sequence: first detail 838.2 ms (whole-job bins from fit) · pans ×5 (37 cells) min 102.4 ms / median 116.1 ms / max 150.1 ms · far pans ×3 (1920 cells) min 119.0 ms / median 123.0 ms / max 158.6 ms
+after releaseTargets (BURN-37 bench sequence): first detail 7982.1 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 11967.3 ms = thermal re-upload 6163.0 ms + whole-job bins 5533.5 ms + run 270.8 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (50 M): first detail run, app sequence < 2 s
+FAIL budget this GPU's default (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins
+
+=== run 2: Edge, fresh profile, after the user closed apps (0.6-1.3 GB free during the run) ===
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+job pitch 15.0 µm (k = 3) · tiles 7 × 7 · fit 15825.2 ms (thermal step + whole-job bins: multi-tile plan) · full run 6607.7 ms
+app sequence: first detail 1156.4 ms (whole-job bins from fit) · pans ×5 (37 cells) min 79.8 ms / median 95.9 ms / max 153.1 ms · far pans ×3 (1920 cells) min 59.4 ms / median 172.7 ms / max 187.4 ms
+after releaseTargets (BURN-37 bench sequence): first detail 6993.9 ms (thermal re-upload + window bins)
+before BURN-41 (whole-job bins in the detail run): 6019.2 ms = thermal re-upload 3487.6 ms + whole-job bins 2330.2 ms + run 201.4 ms
+
+-- window bins vs whole-job bins: detail readback, bit for bit --
+rect 1920 × 1080 at (9046, 9480) · cutoff end · 2,073,600 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (9046, 9480) · cutoff 561 s · 1,038,720 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff end · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 1920 × 1080 at (0, 0) · cutoff 561 s · 2,036,948 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff end · 346,500 burnt cells · window vs whole: bit-identical
+rect 700 × 500 at (19312, 19540) · cutoff 561 s · 0 burnt cells · window vs whole: bit-identical
+
+PASS budget this GPU's default (50 M): first detail run, app sequence < 2 s
+FAIL budget this GPU's default (50 M): first detail run after releaseTargets < 2 s
+PASS window bins: detail readback bit-identical to whole-job bins

@@ -1,0 +1,67 @@
+BURN-41 first-detail-run bench in WebView2 (Aria Burn app) on Windows / Intel Iris Xe, run 2026-11-05.
+aria-burn-core main at 85d07d7 (BURN-41 code a801505, bench 55236e9) · aria-burn main at 9232a1a (debug build)
+Windows 11 Home 26H2 (10.0.26300.9818) · Edge 156.0.4314.58 · WebView2 Runtime 156.0.4314.58
+GPU Intel Iris Xe Graphics (0x9A49), driver 30.0.101.1191, ANGLE / Direct3D 11 · 16 GB RAM, on AC power
+Bench server `npx vite bench --port 5299 --strictPort` (older servers held 5199/5200). The app was started
+on the logged-in desktop (one-shot interactive scheduled task), foreground, with
+ARIA_BURN_BENCH_URL=http://localhost:5299/?auto=detail. Each run is a fresh app process.
+
+Result: FAIL. The bench never got past fit at the 50 M default budget: in 4 of 4 runs the WebGL
+context was lost during the thermal step ("WebGL context lost before the thermal result was read back").
+No Display event 4101 (no TDR) and no low-memory event 2004 in the System log.
+
+Machine state: not a quiet machine. Other apps the user couldn't close kept ~11 GB in use (the laptop's
+Claude app ~6 GB, WSL vmmem ~7 GB incl. the Plane server), so 4-5 GB was free before each run.
+Runs 1-3 had more open (Chrome, the user's Edge); run 4 is after the user closed what they could.
+
+Shared GPU memory / free RAM, sampled every ~3.5 s (Get-Counter "\GPU Adapter Memory(*)\Shared Usage"):
+  run 3  t=9 s  822 MiB / 2663 MiB free · t=12 s 2576 / 195 · t=16 s 3134 / 178 (WebView2 GPU process 2374 MiB) · lost
+  run 4  t=5 s  667 MiB / 3278 MiB free · t=8 s  1952 / 1135 · t=12 s 2979 / 437 (WebView2 GPU process 2374 MiB) · lost
+The WebView2 GPU process sat at exactly 2374 MiB shared just before the loss in both sampled runs, while
+Edge ran the same sequence past 3350 MiB (burn-41-detail-edge-windows-irisxe.txt). That points at a
+WebView2-side ceiling or failed allocation rather than general memory pressure alone; see BURN-38.
+
+=== run 1: WebView2, ?auto=detail, fresh app process ===
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+FAILED: GlContextLostError: WebGL context lost before the thermal result was read back
+webglcontextlost: waiting for restore
+ERROR GlContextLostError: WebGL context lost before the thermal result was read back
+
+=== run 2: WebView2, ?auto=detail, fresh app process ===
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+FAILED: GlContextLostError: WebGL context lost before the thermal result was read back
+webglcontextlost: waiting for restore
+ERROR GlContextLostError: WebGL context lost before the thermal result was read back
+
+=== run 3: WebView2, ?auto=detail, fresh app process ===
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+FAILED: GlContextLostError: WebGL context lost before the thermal result was read back
+webglcontextlost: waiting for restore
+ERROR GlContextLostError: WebGL context lost before the thermal result was read back
+
+=== run 4: WebView2, ?auto=detail, fresh app process ===
+[auto=detail]
+== First detail run (BURN-41) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+userAgent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0 · page visible
+samples 19,688,836 · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred
+
+-- budget this GPU's default (50 M) --
+FAILED: GlContextLostError: WebGL context lost before the thermal result was read back
+webglcontextlost: waiting for restore
+ERROR GlContextLostError: WebGL context lost before the thermal result was read back
+
