@@ -778,16 +778,32 @@ async function runGpuMem(): Promise<void> {
   log('== GPU process memory accounting (BURN-38) ==')
   log(`user agent: ${navigator.userAgent}`)
   log(`gl renderer: ${sim.caps.renderer} · settle ${settle} ms per step`)
+  let lostSeen = false
+  lostAt = () => (lostSeen = true)
   const mark = async (label: string) => {
     sim.sync()
     const line = `${new Date().toISOString()} · ledger ${mb(ledger(gl!).total).padStart(9)} · lost ${gl!.isContextLost()} · ${label}`
     log(line)
     await fetch('/__bench-mark', { method: 'POST', body: `${Date.now()} ${label} · ledger ${mb(ledger(gl!).total)}` }).catch(() => {})
     await new Promise((r) => setTimeout(r, settle))
-    if (gl!.isContextLost()) throw new GlContextLostError(`lost after: ${label}`)
+    if (gl!.isContextLost() || lostSeen) throw new GlContextLostError(`lost after: ${label}`)
   }
+  const params = new URLSearchParams(location.search)
+  const parts = (params.get('parts') ?? 'probes,job').split(',')
+  // Experiment: force the usage hint of every buffer over 16 MiB (asis | static | dynamic).
+  const usage = params.get('usage') ?? 'asis'
+  const realBufferData = gl!.bufferData.bind(gl!) as (...a: unknown[]) => void
+  if (usage !== 'asis') {
+    const forced = usage === 'static' ? gl!.STATIC_DRAW : gl!.DYNAMIC_DRAW
+    ;(gl as unknown as { bufferData: (...a: unknown[]) => void }).bufferData = (...a: unknown[]) => {
+      const size = typeof a[1] === 'number' ? a[1] : (a[1] as ArrayBufferView | null)?.byteLength ?? 0
+      if (size > 16 * 2 ** 20) a[2] = forced
+      realBufferData(...a)
+    }
+  }
+  log(`parts ${parts.join(',')} · buffer usage ${usage}`)
   const n = 19_688_836
-  const data = new Float32Array(n * 3)
+  const data = new Float32Array(parts.includes('probes') ? n * 3 : 0)
   for (let i = 0; i < data.length; i++) data[i] = (i % 1000) * 1e-3
   const prog = new Program(gl!, `#version 300 es
 layout(location = 0) in vec3 a;
@@ -807,6 +823,16 @@ precision highp float; out vec4 o; void main() { o = vec4(1.0); }`)
   }
   try {
     await mark('baseline')
+    if (parts.includes('probes')) await probes()
+    if (parts.includes('job')) await jobSteps()
+    log('PASS gpumem sequence finished without context loss')
+  } catch (e) {
+    log(`STOPPED: ${String(e)}`)
+  }
+  gl!.deleteVertexArray(vao)
+  log(`gl error: ${gl!.getError()}`)
+
+  async function probes(): Promise<void> {
     const bufferCase = async (label: string, usage: number, sub: boolean) => {
       const b = gl!.createBuffer()!
       gl!.bindBuffer(gl!.ARRAY_BUFFER, b)
@@ -844,7 +870,9 @@ precision highp float; out vec4 o; void main() { o = vec4(1.0); }`)
     gl!.deleteFramebuffer(f)
     gl!.deleteTexture(t)
     await mark('RG32F texture deleted')
+  }
 
+  async function jobSteps(): Promise<void> {
     log()
     log('-- 5 µm 100 mm job, birch: the app sequence step by step --')
     const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), machine)
@@ -862,17 +890,14 @@ precision highp float; out vec4 o; void main() { o = vec4(1.0); }`)
     await mark('overview resized')
     const fitted = sim.fit(job.store, setup, big)
     await mark(`fit: ${fitted.plan.tiles.length} tiles ≤ ${planSide(fitted.plan)}`)
+    sim.run(job.store, fitted, { region: { x: 9500, y: 9500, width: 1000, height: 1000 } })
+    await mark('one 1000² region run')
     sim.run(job.store, fitted, { overview: big })
     await mark('full run done')
     big.dispose()
     sim.releaseTargets()
     await mark('overview disposed, releaseTargets')
-    log('PASS gpumem sequence finished without context loss')
-  } catch (e) {
-    log(`STOPPED: ${String(e)}`)
   }
-  gl!.deleteVertexArray(vao)
-  log(`gl error: ${gl!.getError()}`)
 }
 
 /** Quick loop for tuning: thermal step only, on the spike job (store cached across calls). */
