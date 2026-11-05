@@ -18,7 +18,7 @@ import { depositCpu, type StageEnergy } from '../cpu.ts'
 import { coarseSetup, type SimSetup } from '../job.ts'
 import type { Kernel1D, SkewTaps } from '../kernel.ts'
 import { responseParams } from '../response.ts'
-import { SampleBins } from '../bins.ts'
+import { SampleBins, binLattice, bucketsOf, type BucketWindow } from '../bins.ts'
 import type { SampleStore } from '../sample-store.ts'
 import { defaultThermalStep, peakTemperatureModel, thermalFor, type ThermalResult } from '../thermal.ts'
 import { GlPeakTemperatureStep } from './gl-thermal.ts'
@@ -121,6 +121,8 @@ export interface GlTileView {
 const FLT_BIG = 3.0e38
 /** Bin edge in cells for tiled deposit (tiles are at most TILE_MAX_CELLS = 9000, so ≤ ~18 bins across). */
 const BIN_CELLS = 512
+/** Bucket edge (mm): at the detail pitch, not the job grid's, so full and detail runs (BURN-37) share one set of bins. */
+const binBucketMm = (setup: SimSetup) => BIN_CELLS * setup.detailPitchMm
 /** Coarse checkpoints: at most this many, at least this many samples apart. */
 const CHECKPOINT_MAX = 16
 const CHECKPOINT_MIN_SPACING = 1 << 16
@@ -352,6 +354,14 @@ export class GlSim {
   private readonly binBuffer: WebGLBuffer
   private checkpoints: { key: string; store: SampleStore; spacing: number; targets: Target[] } | null = null
   private readonly binIndexBuffer: WebGLBuffer
+  /**
+   * Window bins for region runs while the whole-job bins don't exist (BURN-41):
+   * the first detail run bins only the buckets near its view, not every sample.
+   */
+  private windowBins: SampleBins | null = null
+  private windowBinStore: SampleStore | null = null
+  private readonly windowBinBuffer: WebGLBuffer
+  private readonly windowBinIndexBuffer: WebGLBuffer
   /** The GPU thermal step; null without EXT_float_blend (the CPU reference runs instead). */
   readonly thermalStep: GlPeakTemperatureStep | null
   private thermalState: {
@@ -412,6 +422,8 @@ export class GlSim {
     this.sampleBuffer = gl.createBuffer()!
     this.binBuffer = gl.createBuffer()!
     this.binIndexBuffer = gl.createBuffer()!
+    this.windowBinBuffer = gl.createBuffer()!
+    this.windowBinIndexBuffer = gl.createBuffer()!
     gl.bindVertexArray(this.sampleVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.sampleBuffer)
     gl.enableVertexAttribArray(0)
@@ -590,6 +602,19 @@ export class GlSim {
     gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
     trackBuffer(gl, this.binBuffer, 0)
     trackBuffer(gl, this.binIndexBuffer, 0)
+    this.dropWindowBins()
+  }
+
+  private dropWindowBins(): void {
+    if (!this.windowBins) return
+    this.windowBins = this.windowBinStore = null
+    const gl = this.gl
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinIndexBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW)
+    trackBuffer(gl, this.windowBinBuffer, 0)
+    trackBuffer(gl, this.windowBinIndexBuffer, 0)
   }
 
   private dropCheckpoints(): void {
@@ -627,9 +652,10 @@ export class GlSim {
 
   /**
    * Draw samples [first, first + count) of `buffer` (interleaved xye) as deposit
-   * points. `binned` draws from the bin buffer, whose store indices are in binIndexBuffer.
+   * points. With `indexBuffer`, `buffer` is a bin buffer and indexBuffer holds its store indices.
    */
-  private drawSamples(buffer: WebGLBuffer, first: number, count: number, binned = false): void {
+  private drawSamples(buffer: WebGLBuffer, first: number, count: number, indexBuffer: WebGLBuffer | null = null): void {
+    const binned = !!indexBuffer
     if (count <= 0) return
     const gl = this.gl
     gl.bindVertexArray(this.sampleVao)
@@ -638,7 +664,7 @@ export class GlSim {
     if (this.active) {
       this.depositThermal.i('u_first', first).i('u_binned', binned ? 1 : 0)
       if (binned) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.binIndexBuffer)
+        gl.bindBuffer(gl.ARRAY_BUFFER, indexBuffer)
         gl.enableVertexAttribArray(1)
         gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 4, first * 4)
         gl.vertexAttribDivisor(1, 1)
@@ -655,9 +681,9 @@ export class GlSim {
    */
   ensureBins(store: SampleStore, setup: SimSetup): SampleBins {
     const gl = this.gl
-    // Detail pitch, not the job grid's: full and detail runs (BURN-37) share one set of bins.
-    const bucketMm = BIN_CELLS * setup.detailPitchMm
-    if (!this.bins || this.binStore !== store || this.bins.version !== store.version || this.bins.bucketMm !== bucketMm) {
+    const bucketMm = binBucketMm(setup)
+    if (!this.binsCurrent(store, setup)) {
+      this.dropWindowBins()
       this.bins = new SampleBins(store, bucketMm)
       this.binStore = store
       gl.bindBuffer(gl.ARRAY_BUFFER, this.binBuffer)
@@ -667,19 +693,75 @@ export class GlSim {
       trackBuffer(gl, this.binBuffer, this.bins.xye.byteLength)
       trackBuffer(gl, this.binIndexBuffer, this.bins.index.byteLength)
     }
-    return this.bins
+    return this.bins!
   }
 
-  /** Multi-tile deposit: only the bins that can reach this tile's padded rect. */
-  private depositBinned(store: SampleStore, setup: SimSetup, padded: CellRect, cutoffS: number): void {
+  /** Whether the whole-job bins are built and uploaded for this store and the setup's detail pitch. */
+  private binsCurrent(store: SampleStore, setup: SimSetup): boolean {
+    const b = this.bins
+    return !!b && this.binStore === store && b.version === store.version && b.bucketMm === binBucketMm(setup)
+  }
+
+  /** True when the whole-job bins are ready, so a region run bins nothing (bench and tests). */
+  hasBins(store: SampleStore, setup: SimSetup): boolean {
+    return this.binsCurrent(store, setup)
+  }
+
+  /**
+   * Window bins covering the mm rect, uploaded (BURN-41). Reused while the
+   * store, pitch and window still fit; otherwise rebuilt around the rect,
+   * padded by half its size in buckets each side so a pan stays inside.
+   */
+  private ensureWindowBins(store: SampleStore, setup: SimSetup, x0: number, y0: number, x1: number, y1: number): SampleBins {
+    const bucketMm = binBucketMm(setup)
+    const cur = this.windowBins
+    if (
+      cur &&
+      this.windowBinStore === store &&
+      cur.version === store.version &&
+      cur.bucketMm === bucketMm &&
+      cur.covers(x0, y0, x1, y1)
+    )
+      return cur
+    const q = bucketsOf(binLattice(store, bucketMm), x0, y0, x1, y1)
+    const padX = Math.max(1, Math.ceil((q.bx1 - q.bx0 + 1) / 2))
+    const padY = Math.max(1, Math.ceil((q.by1 - q.by0 + 1) / 2))
+    const window: BucketWindow = { bx0: q.bx0 - padX, by0: q.by0 - padY, bx1: q.bx1 + padX, by1: q.by1 + padY }
+    const bins = new SampleBins(store, bucketMm, window)
+    const gl = this.gl
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, bins.xye, gl.STATIC_DRAW)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.windowBinIndexBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, bins.index, gl.STATIC_DRAW)
+    trackBuffer(gl, this.windowBinBuffer, bins.xye.byteLength)
+    trackBuffer(gl, this.windowBinIndexBuffer, bins.index.byteLength)
+    this.windowBins = bins
+    this.windowBinStore = store
+    return bins
+  }
+
+  /**
+   * Binned deposit: only the bins that can reach this tile's padded rect. A
+   * region run uses the whole-job bins when they are ready and window bins
+   * otherwise; both draw the same samples in the same order (BURN-41).
+   */
+  private depositBinned(store: SampleStore, setup: SimSetup, padded: CellRect, cutoffS: number, region: boolean): void {
     const { grid } = setup
-    const bins = this.ensureBins(store, setup)
     // One cell of slack for the bilinear footprint; anything else off the rect is clipped.
     const x0 = grid.originXMm + (padded.x - 1) * grid.pitchMm
     const y0 = grid.originYMm + (padded.y - 1) * grid.pitchMm
     const x1 = grid.originXMm + (padded.x + padded.width + 1) * grid.pitchMm
     const y1 = grid.originYMm + (padded.y + padded.height + 1) * grid.pitchMm
-    for (const [first, count] of bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(this.binBuffer, first, count, true)
+    const whole = !region || this.binsCurrent(store, setup)
+    if (!whole) {
+      // A region off the job's samples deposits nothing; don't bin for it.
+      const q = bucketsOf(binLattice(store, binBucketMm(setup)), x0, y0, x1, y1)
+      if (q.bx0 > q.bx1 || q.by0 > q.by1) return
+    }
+    const bins = whole ? this.ensureBins(store, setup) : this.ensureWindowBins(store, setup, x0, y0, x1, y1)
+    const buffer = whole ? this.binBuffer : this.windowBinBuffer
+    const index = whole ? this.binIndexBuffer : this.windowBinIndexBuffer
+    for (const [first, count] of bins.ranges(x0, y0, x1, y1, cutoffS)) this.drawSamples(buffer, first, count, index)
   }
 
   /**
@@ -960,7 +1042,7 @@ export class GlSim {
           if (poolKind === 'coarse') this.depositCoarse(store, setup, ts.a, n)
           else {
             this.beginDeposit(setup, padded, ts.a.fbo)
-            if (binned) this.depositBinned(store, setup, padded, options.timeCutoffS ?? Infinity)
+            if (binned) this.depositBinned(store, setup, padded, options.timeCutoffS ?? Infinity, !!options.region)
             else this.drawSamples(this.sampleBuffer, 0, n)
           }
           gl.disable(gl.BLEND)

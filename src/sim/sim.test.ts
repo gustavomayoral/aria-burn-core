@@ -42,6 +42,8 @@ import {
   contextGone,
   ledger,
   SampleBins,
+  binLattice,
+  bucketsOf,
   SampleStore,
   blurCpu,
   cellDepthMm,
@@ -656,6 +658,63 @@ describe('spatial bins', () => {
     }
     expect(total).toBeGreaterThanOrEqual(inside)
     expect(total).toBeLessThan(store.countUntil(cutoff))
+  })
+  // BURN-41: a detail run bins only a window of buckets. The deposit is additive
+  // float blending, so the result is bit-identical exactly when the same samples
+  // are drawn in the same order: check the store-index sequence, not just the set.
+  const sequence = (b: SampleBins, x0: number, y0: number, x1: number, y1: number, cutoff: number) => {
+    const out: number[] = []
+    for (const [first, count] of b.ranges(x0, y0, x1, y1, cutoff)) for (let i = first; i < first + count; i++) out.push(b.index[i]!)
+    return out
+  }
+  const lattice = binLattice(store, 0.7)
+
+  it('window bins draw the same samples in the same order as whole-job bins (bit-identical deposit)', () => {
+    const rects: [number, number, number, number][] = [
+      [2.1, 1.3, 6.4, 4.2],
+      [-1, -1, 0.5, 0.5], // corner, partly off the lattice
+      [9.2, 5.1, 12, 9], // far corner, partly off
+      [4.9, 2.95, 5.05, 3.05], // inside one bucket
+      [-5, -5, 20, 20], // the whole job
+    ]
+    for (const [x0, y0, x1, y1] of rects) {
+      const q = bucketsOf(lattice, x0, y0, x1, y1)
+      for (const pad of [0, 1, 3]) {
+        const win = new SampleBins(store, 0.7, { bx0: q.bx0 - pad, by0: q.by0 - pad, bx1: q.bx1 + pad, by1: q.by1 + pad })
+        expect(win.covers(x0, y0, x1, y1)).toBe(true)
+        for (const cutoff of [Infinity, plan.durationS * 0.4, plan.durationS * 0.01, -1]) {
+          const a = sequence(bins, x0, y0, x1, y1, cutoff)
+          const b = sequence(win, x0, y0, x1, y1, cutoff)
+          expect(b).toEqual(a)
+          // And the bin copies hold the store's values for those indices.
+          for (const [first, count] of win.ranges(x0, y0, x1, y1, cutoff))
+            for (let i = first; i < first + count; i++) {
+              const s = win.index[i]!
+              expect([win.xye[i * 3], win.xye[i * 3 + 1], win.xye[i * 3 + 2], win.tS[i]]).toEqual([
+                store.xye[s * 3],
+                store.xye[s * 3 + 1],
+                store.xye[s * 3 + 2],
+                store.tS[s],
+              ])
+            }
+        }
+      }
+    }
+  })
+
+  it('window bins hold only their buckets and refuse a rect outside them', () => {
+    const q = bucketsOf(lattice, 4, 2, 5, 3)
+    const win = new SampleBins(store, 0.7, q)
+    expect(win.isWhole).toBe(false)
+    expect(win.count).toBeGreaterThan(0)
+    expect(win.count).toBeLessThan(store.count / 4)
+    expect(win.covers(8, 5, 9, 5.5)).toBe(false)
+    expect(() => win.ranges(8, 5, 9, 5.5)).toThrow(/outside the binned window/)
+    // A window over the whole lattice is the whole-job binning.
+    const all = new SampleBins(store, 0.7, { bx0: -2, by0: -2, bx1: 99, by1: 99 })
+    expect(all.isWhole).toBe(true)
+    expect(all.index).toEqual(bins.index)
+    expect(all.start).toEqual(bins.start)
   })
 })
 

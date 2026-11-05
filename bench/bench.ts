@@ -27,6 +27,7 @@ import {
   loadMachineProfile,
   loadMaterialProfile,
   detailGrid,
+  detailSetup,
   setupJob,
   simulateCpu,
   stitch,
@@ -852,14 +853,146 @@ async function runPitch(): Promise<void> {
   ;(window as unknown as { __benchPitch: string }).__benchPitch = lines.join('\n')
 }
 
+/**
+ * BURN-41: the first detail run. Same 5 µm 100 mm job and 1920 × 1080-cell
+ * view as runPitch, at this GPU's default cell budget and at the Iris Xe one.
+ * Each budget times the app's sequence (fit, full run, first detail run, pans)
+ * and the BURN-37 bench's (releaseTargets between the full and the detail
+ * run, so the detail run also re-uploads the thermal step's per-sample
+ * energies), and the pre-BURN-41 cost of that run (whole-job bins built in
+ * it). Then a readback of the detail run from window bins and from whole-job
+ * bins, compared bit for bit.
+ */
+async function runDetailBench(): Promise<void> {
+  lines.length = 0
+  const pass: Record<string, boolean> = {}
+  log(`== First detail run (BURN-41) · ${sim.caps.renderer} ==`)
+  log(`userAgent ${navigator.userAgent} · page ${document.visibilityState}`)
+  const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), machine)
+  log(`samples ${job.store.count.toLocaleString()} · birch with the thermal step · view 1920 × 1080 cells at the detail pitch, centred`)
+  const store = job.store
+  const budgets: [string, number][] = [[`this GPU's default (${(sim.cellBudget / 1e6).toFixed(0)} M)`, sim.cellBudget]]
+  if (sim.cellBudget !== JOB_CELL_BUDGET) budgets.push([`Iris Xe (${(JOB_CELL_BUDGET / 1e6).toFixed(0)} M)`, JOB_CELL_BUDGET])
+  const synced = (fn: () => unknown) => {
+    const t0 = performance.now()
+    fn()
+    sim.sync()
+    return performance.now() - t0
+  }
+  let lastSetup: SimSetup | null = null
+  for (const [label, cellBudget] of budgets) {
+    log()
+    log(`-- budget ${label} --`)
+    sim.releaseTargets()
+    const burn = new GlBurnView(sim)
+    burn.setMaterial(birch)
+    try {
+      let setup = setupJob(store.burnBounds!, machine, birch, { cellBudget })
+      const fitMs = synced(() => (setup = sim.fit(store, setup, burn.full)))
+      const k = Math.round(setup.grid.pitchMm / setup.detailPitchMm)
+      const binnedByFit = sim.hasBins(store, setup)
+      const fullMs = synced(() => burn.runFull(store, setup, Infinity))
+      const g = detailGrid(setup)
+      const rect = { x: Math.floor(g.width / 2) - 960, y: Math.floor(g.height / 2) - 540, width: 1920, height: 1080 }
+      log(`job pitch ${(setup.grid.pitchMm * 1000).toFixed(1)} µm (k = ${k}) · tiles ${setup.plan.cols} × ${setup.plan.rows} · fit ${ms(fitMs)} (thermal step${binnedByFit ? ' + whole-job bins: multi-tile plan' : ', no bins: one tile'}) · full run ${ms(fullMs)}`)
+      await nextFrame()
+      // 1. The app's sequence: the detail run right after the full run.
+      const app = synced(() => burn.runDetail(store, setup, rect, Infinity))
+      const binsApp = binnedByFit ? 'whole-job bins from fit' : 'window bins'
+      const pans: number[] = []
+      for (let i = 1; i <= 5; i++) pans.push(synced(() => burn.runDetail(store, setup, { ...rect, x: rect.x + 37 * i }, Infinity)))
+      // Far pans: a view width each time, past any window built around the first view.
+      const far: number[] = []
+      for (let i = 1; i <= 3; i++) far.push(synced(() => burn.runDetail(store, setup, { ...rect, x: rect.x - 1920 * i }, Infinity)))
+      log(`app sequence: first detail ${ms(app)} (${binsApp}) · pans ×5 (37 cells) ${stats(pans)} · far pans ×3 (1920 cells) ${stats(far)}`)
+      pass[`budget ${label}: first detail run, app sequence < 2 s`] = app < 2000
+      await nextFrame()
+      // 2. The BURN-37 bench's sequence: releaseTargets before the detail run.
+      sim.releaseTargets()
+      const afterRelease = synced(() => burn.runDetail(store, setup, rect, Infinity))
+      log(`after releaseTargets (BURN-37 bench sequence): first detail ${ms(afterRelease)} (thermal re-upload + window bins)`)
+      pass[`budget ${label}: first detail run after releaseTargets < 2 s`] = afterRelease < 2000
+      await nextFrame()
+      // 3. Before BURN-41: the same, with the whole-job bins built in the detail run.
+      sim.releaseTargets()
+      const thermalMs = synced(() => sim.thermal(store, setup))
+      const binsMs = synced(() => sim.ensureBins(store, setup))
+      const runMs = synced(() => burn.runDetail(store, setup, rect, Infinity))
+      log(`before BURN-41 (whole-job bins in the detail run): ${ms(thermalMs + binsMs + runMs)} = thermal re-upload ${ms(thermalMs)} + whole-job bins ${ms(binsMs)} + run ${ms(runMs)}`)
+      lastSetup = setup
+    } catch (e) {
+      log(`FAILED: ${String(e)}`)
+      if (e instanceof GlContextLostError) await waitFor((f) => (restored = f), 10000)
+    }
+    burn.dispose()
+    sim.releaseTargets()
+    await nextFrame()
+  }
+  if (lastSetup) {
+    log()
+    log('-- window bins vs whole-job bins: detail readback, bit for bit --')
+    const setup = lastSetup
+    const g = detailGrid(setup)
+    const views = [
+      { x: Math.floor(g.width / 2) - 960, y: Math.floor(g.height / 2) - 540, width: 1920, height: 1080 },
+      { x: 0, y: 0, width: 1920, height: 1080 },
+      { x: g.width - 700, y: g.height - 500, width: 700, height: 500 },
+    ]
+    const read = (rect: { x: number; y: number; width: number; height: number }, cutoff: number) => {
+      let got: { fluence: Float32Array; color: Uint8ClampedArray; verdict: Uint8Array; depth: Float32Array } | null = null
+      sim.run(store, detailSetup(setup), {
+        region: rect,
+        timeCutoffS: cutoff,
+        onTile: (t) => {
+          const { core, padded } = t.tile
+          const local = { x: core.x - padded.x, y: core.y - padded.y, width: core.width, height: core.height }
+          got = { fluence: t.readFluence(local), color: t.readColor(local), verdict: t.readVerdict(local), depth: t.readDepth(local) }
+        },
+      })
+      return got!
+    }
+    const same = (a: ArrayLike<number>, b: ArrayLike<number>) => {
+      if (a.length !== b.length) return false
+      const fa = new Uint8Array((a as Float32Array).buffer, (a as Float32Array).byteOffset, (a as Float32Array).byteLength)
+      const fb = new Uint8Array((b as Float32Array).buffer, (b as Float32Array).byteOffset, (b as Float32Array).byteLength)
+      if (fa.length !== fb.length) return false
+      for (let i = 0; i < fa.length; i++) if (fa[i] !== fb[i]) return false
+      return true
+    }
+    const duration = store.tS[store.count - 1]!
+    let all = true
+    for (const rect of views) {
+      for (const cutoff of [Infinity, duration * 0.5]) {
+        sim.releaseTargets()
+        sim.thermal(store, setup)
+        const usedWindow = !sim.hasBins(store, setup)
+        const a = read(rect, cutoff)
+        sim.ensureBins(store, setup)
+        const b = read(rect, cutoff)
+        const ok = usedWindow && same(a.fluence, b.fluence) && same(a.color, b.color) && same(a.verdict, b.verdict) && same(a.depth, b.depth)
+        let nonZero = 0
+        for (const v of a.fluence) if (v !== 0) nonZero++
+        log(`rect ${rect.width} × ${rect.height} at (${rect.x}, ${rect.y}) · cutoff ${cutoff === Infinity ? 'end' : `${cutoff.toFixed(0)} s`} · ${nonZero.toLocaleString()} burnt cells · ${usedWindow ? 'window' : 'WHOLE (not a window run)'} vs whole: ${ok ? 'bit-identical' : 'DIFFERENT'}`)
+        all &&= ok
+      }
+    }
+    pass['window bins: detail readback bit-identical to whole-job bins'] = all
+    sim.releaseTargets()
+  }
+  log()
+  for (const [k, v] of Object.entries(pass)) log(`${v ? 'PASS' : 'FAIL'} ${k}`)
+  ;(window as unknown as { __benchDetail: string }).__benchDetail = lines.join('\n')
+}
+
+document.getElementById('detail')!.addEventListener('click', () => void runDetailBench().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('pitch')!.addEventListener('click', () => void runPitch().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('fine')!.addEventListener('click', () => void runFine().catch((e) => log(`ERROR ${String(e)}`)))
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))
 ;(window as unknown as { __runBench: typeof run; __runFine: typeof runFine }).__runBench = run
 
-/** ?auto=live (or run, fine, thermal, tiles, stages, pitch; comma-separated): run on load and POST each report to the bench server. */
+/** ?auto=live (or run, fine, thermal, tiles, stages, pitch, detail; comma-separated): run on load and POST each report to the bench server. */
 async function autoRun(names: string[]): Promise<void> {
-  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages, pitch: runPitch }
+  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages, pitch: runPitch, detail: runDetailBench }
   for (const name of names) {
     const fn = runs[name]
     if (!fn) {
