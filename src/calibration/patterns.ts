@@ -633,24 +633,27 @@ const strokeRect = (ctx: PatternContext, x0: number, x1: number, y: number) => {
 export const firingThresholdPattern: PatternGenerator<FiringThresholdOptions> = {
   kind: 'firing-threshold',
   title: 'Firing threshold',
-  summary: 'Lines at rising low power, slowly. The first line that marks is where the diode starts to emit: the bottom of the power curve.',
+  summary:
+    'Lines at rising low power, slowly. On a material that marks at very low power (dark card, black paper), the first line that marks is where the diode starts to emit: the bottom of the power curve.',
   pick: 'first-visible',
   measures: {
     on: 'LaserModule',
     field: 'powerCurve',
     profileField: 'MachineProfile.powerCurve',
     inContract: true,
-    reads: 'The S of the first line that marks is where powerCurve leaves power 0; below it the diode does not emit.',
+    reads:
+      'The S of the first line that marks is where powerCurve leaves power 0, on a material that marks at very low power. On a less sensitive one (wood, acrylic) a line a spot wide needs more than the diode’s first light to mark, so the reading is an upper bound.',
   },
   defaults(ctx) {
     const floor = curveFloor(ctx)
     // From well under the curve's current floor to well over it, so a real floor either side shows.
     const lo = Math.max(0.005, floor * 0.4)
-    const hi = Math.min(1, Math.max(0.08, floor * 2.5))
-    const pcts = [...new Set(linear(lo * 100, hi * 100, 16).map((p) => Math.round(p * 10) / 10))]
-    // Slow enough that 1 % of full power, on the centre line, reaches the material's mark threshold.
+    const hi = Math.min(1, Math.max(0.1, floor * 4))
+    const pcts = [...new Set(linear(lo * 100, hi * 100, 20).map((p) => Math.round(p * 10) / 10))]
+    // Slow enough that 1 % of full power puts the material's full-mark fluence on the centre line: a line
+    // a spot wide loses heat sideways, so a line at the mark threshold barely shows (usually MIN_FEED).
     const p1 = ctx.machine.opticalPowerW * 0.01
-    const v = (p1 / (materialRange(ctx).lo * Math.sqrt(2 * Math.PI) * strokeSigmaMm(ctx))) * 60
+    const v = (p1 / (materialRange(ctx).hi * Math.sqrt(2 * Math.PI) * strokeSigmaMm(ctx))) * 60
     const feed = tidyFeed(Math.max(MIN_FEED_MM_PER_MIN, Math.min(1000, v, axisRate(ctx, 'x'))))
     return { powersPct: pcts, feedMmPerMin: feed, lineMm: 20, pitchMm: 2.5, labelMm: 1.6 }
   },
@@ -747,7 +750,8 @@ export const focusHeightPattern: PatternGenerator<FocusHeightOptions> = {
   },
   defaults(ctx) {
     const feed = tidyFeed(Math.max(MIN_FEED_MM_PER_MIN, Math.min(1500, axisRate(ctx, 'x'))))
-    const s = lineForEnergy(ctx, materialMid(ctx), feed)
+    // The material's full-mark fluence (as the labels): a line a spot wide at mid fluence barely shows.
+    const s = lineForEnergy(ctx, materialRange(ctx).hi, feed)
     return {
       zOffsetsMm: linear(2, -2, 9).map((z) => Math.round(z * 100) / 100),
       zMode: 'pause' as FocusZMode,
