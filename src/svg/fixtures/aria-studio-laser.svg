@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="215.9mm" height="279.4mm" viewBox="0 0 215.9 279.4">
+  <path d="M40,60 L140,60 L140,110 L40,110 Z" fill="none" stroke="#000000" stroke-width="0.1"/>
+  <path d="M150,85 C150,96.0457 158.9543,105 170,105 C181.0457,105 190,96.0457 190,85 C190,73.9543 181.0457,65 170,65 C158.9543,65 150,73.9543 150,85 Z" fill="none" stroke="#000000" stroke-width="0.1"/>
+  <path d="M40,130 L140,130" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,135 L140,135" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,140 L140,140" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,145 L140,145" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,150 L140,150" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,155 L140,155" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,160 L140,160" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,165 L140,165" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M40,170 L140,170" fill="none" stroke="#0000ff" stroke-width="0.1"/>
+  <path d="M0,0 L215.9,0 L215.9,279.4 L0,279.4 Z" fill="none" stroke="#ffdb66" stroke-width="0.1"/>
+</svg>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Aria Studio laser layout as BURN-50 describes it: the canvas in a translate
+     group, each laser layer a group carrying stroke (and fill="none"). Same
+     drawing as aria-studio-laser.svg, canvas 30 mm from the left, 50 mm from the top. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="215.9mm" height="279.4mm" viewBox="0 0 215.9 279.4">
+  <g id="canvas" transform="translate(30 50)">
+    <g id="layer-line" stroke="#000000" fill="none" stroke-width="0.1">
+      <path d="M10,10 h100 v50 h-100 z"/>
+    </g>
+    <g id="layer-outline" stroke="#000" fill="none" stroke-width="0.1">
+      <circle cx="140" cy="35" r="20"/>
+    </g>
+    <g id="layer-c01" style="stroke:#0000ff;fill:none" stroke-width="0.1">
+      <path d="M10,80 H110"/>
+      <path d="M10,85 H110"/>
+      <path d="M10,90 H110"/>
+    </g>
+  </g>
+</svg>

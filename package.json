@@ -16,7 +16,8 @@
     "./contract/fixtures/*": "./src/contract/fixtures/*",
     "./profiles/provisional/*": "./src/profiles/provisional/*",
     "./profiles/catalog/*": "./src/profiles/catalog/*",
-    "./calibration": "./src/calibration/index.ts"
+    "./calibration": "./src/calibration/index.ts",
+    "./svg": "./src/svg/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

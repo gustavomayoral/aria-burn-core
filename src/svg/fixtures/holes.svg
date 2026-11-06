@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Two squares with a square hole, each one path of two subpaths, no stroke.
+     Left: even-odd, hole winds the same way. Right: nonzero, hole winds the other way. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" viewBox="0 0 100 50">
+  <path id="evenodd" fill="#ff0000" fill-rule="evenodd" stroke="none"
+        d="M10,10 H40 V40 H10 Z M20,20 H30 V30 H20 Z"/>
+  <path id="nonzero" style="fill:#ff0000;fill-rule:nonzero" stroke="none"
+        d="M60,10 H90 V40 H60 Z M70,20 V30 H80 V20 Z"/>
+  <path id="stroked" fill="#00e000" stroke="#0000ff" d="M10,45 H90"/>
+</svg>

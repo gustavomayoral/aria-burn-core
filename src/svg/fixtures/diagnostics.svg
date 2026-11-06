@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100" height="50">
+  <style>
+    path { stroke: #0000ff; fill: none }
+    g > path { stroke: red }
+    .a:hover { stroke: green }
+    @media print { path { stroke: black } }
+  </style>
+  <defs>
+    <clipPath id="clip"><rect width="10" height="10"/></clipPath>
+    <mask id="m"><rect width="10" height="10" fill="white"/></mask>
+    <linearGradient id="grad"><stop offset="0" stop-color="red"/></linearGradient>
+  </defs>
+  <text x="10" y="10">Hello <tspan>world</tspan></text>
+  <text x="10" y="20">Again</text>
+  <image x="0" y="0" width="10" height="10" xlink:href="data:image/png;base64,AAAA"/>
+  <path d="M0,0 L10,10" clip-path="url(#clip)"/>
+  <path d="M0,10 L10,20" mask="url(#m)"/>
+  <rect x="20" y="20" width="10" height="10" fill="url(#grad)" stroke="none"/>
+  <rect x="40" y="20" width="10" height="10" fill="none" stroke="none"/>
+  <foreignObject width="10" height="10"/>
+  <blink/>
+  <blink/>
+  <circle cx="5" cy="5" r="1em" stroke="#000"/>
+  <use href="#missing"/>
+  <path d="M0,0 L5,5 L oops"/>
+</svg>

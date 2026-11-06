@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 100 x 100 mm, user units = mm. A 10 mm square at the origin, moved by nested transforms:
+     translate(50,50) → rotate(90) → scale(2) → translate(5,0), then a matrix() leaf.
+     The square's corner (0,0) lands at (50,60) in SVG coordinates; (10,0) at (50,80). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100" fill="none" stroke="#ff0000">
+  <g transform="translate(50,50)">
+    <g transform="rotate(90)">
+      <g transform="scale(2)">
+        <path id="sq" transform="translate(5,0)" d="M0,0 L10,0 L10,10 L0,10 Z"/>
+      </g>
+    </g>
+  </g>
+  <g transform="translate(10 10) scale(0.5)">
+    <rect transform="matrix(1 0 0 1 20 0)" x="0" y="0" width="20" height="20"/>
+  </g>
+  <g transform="skewX(45)">
+    <line x1="0" y1="90" x2="0" y2="100"/>
+  </g>
+</svg>
