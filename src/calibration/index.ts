@@ -9,3 +9,13 @@ export * from './font.ts'
 export * from './toolpath.ts'
 export * from './patterns.ts'
 export * from './generate.ts'
+// Photo fit (BURN-15): colour maths, the reference card, detection, colour
+// correction, the forward model, the fit and synthetic photos.
+export * from './color.ts'
+export * from './image.ts'
+export * from './card.ts'
+export * from './detect.ts'
+export * from './photo.ts'
+export * from './forward.ts'
+export * from './solve.ts'
+export * from './fit.ts'
