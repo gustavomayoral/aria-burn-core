@@ -1112,6 +1112,97 @@ async function runPitch(): Promise<void> {
 }
 
 /**
+ * BURN-43: the 5 µm 100 mm job at this GPU's default job cell budget (15 µm on
+ * Iris Xe) under several GPU byte budgets, in one process. ?budgets=768,1024,…
+ * (MiB; default 768,1024,1280,1536), ?warm=N warm runs (default 5). For each
+ * budget: a new GlSim with that gpuBudgetBytes, fit (thermal step), a cold run,
+ * N warm runs, then an untimed run that reads every tile core back and hashes
+ * the stitched dose and verdict (tiling only changes the work split, so all
+ * budgets must hash the same). Each step posts a MARK so an external memory
+ * sampler can be lined up with it.
+ */
+async function runTileSweep(): Promise<void> {
+  lines.length = 0
+  const params = new URLSearchParams(location.search)
+  const budgetsMiB = (params.get('budgets') ?? '768,1024,1280,1536').split(',').map(Number).filter((v) => v > 0)
+  const warmN = Math.max(1, Number(params.get('warm') ?? 5))
+  const mark = (label: string) => fetch('/__bench-mark', { method: 'POST', body: `${Date.now()} ${label} · ledger ${mb(ledger(gl!).total)}` }).catch(() => {})
+  log(`== Tile size vs GPU budget (BURN-43) · ${sim.caps.renderer} ==`)
+  const job = storeFor(rasterJob({ x0Mm: 10, y0Mm: 10, widthMm: 100, heightMm: 100, intervalMm: 0.1, feedMmPerMin: 6000, s: 300 }), machine)
+  log(`samples ${job.store.count.toLocaleString()} · birch with the thermal step · budgets ${budgetsMiB.join(', ')} MiB · warm ×${warmN}`)
+  const rows: string[] = []
+  const hashes = new Set<string>()
+  let lost = 0
+  for (const mib of budgetsMiB) {
+    log()
+    log(`-- GPU budget ${mib} MiB --`)
+    sim.releaseTargets()
+    sim = new GlSim(gl!, { gpuBudgetBytes: mib * 2 ** 20 })
+    const label = `budget ${mib} MiB`
+    try {
+      await mark(`${label}: fit`)
+      const tf = performance.now()
+      const setup = sim.fit(job.store, setupJob(job.store.burnBounds!, machine, birch, { cellBudget: sim.cellBudget }), overview)
+      const fitMs = performance.now() - tf
+      const side = Math.max(...setup.plan.tiles.map((t) => Math.max(t.padded.width, t.padded.height)))
+      const k = Math.round(setup.grid.pitchMm / setup.detailPitchMm)
+      log(`pitch ${(setup.grid.pitchMm * 1000).toFixed(1)} µm (k = ${k}) · grid ${setup.grid.width} × ${setup.grid.height} · tiles ${setup.plan.cols} × ${setup.plan.rows}, padded ≤ ${side}² (pool ${mb(tilePoolBytes(side, side))}) · ledger after fit ${mb(ledger(gl!).total)} · fit ${ms(fitMs)}`)
+      await mark(`${label}: cold run`)
+      const cold = timedRun(() => sim.run(job.store, setup, { overview }))
+      if (cold.result.replanned) log(`  cold run replanned: ${cold.result.plan.cols} × ${cold.result.plan.rows} (failed sides ${cold.result.failedSides.join(', ') || '-'})`)
+      overview.drawToCanvas()
+      await nextFrame()
+      const warm: number[] = []
+      for (let i = 0; i < warmN; i++) {
+        await mark(`${label}: warm ${i + 1}`)
+        warm.push(timedRun(() => sim.run(job.store, setup, { overview })).ms)
+        await nextFrame()
+      }
+      log(`full-res: cold ${ms(cold.ms)} · warm ×${warmN} ${stats(warm)} · all warm: ${warm.map((v) => v.toFixed(0)).join(', ')} ms`)
+      await mark(`${label}: hash run`)
+      const { width: gw, height: gh } = setup.grid
+      const dose = new Float32Array(gw * gh)
+      const verdict = new Float32Array(gw * gh)
+      sim.run(job.store, setup, {
+        onTile: (v) => {
+          const c = v.tile.core
+          const local = { x: c.x - v.tile.padded.x, y: c.y - v.tile.padded.y, width: c.width, height: c.height }
+          const f = v.readFluence(local)
+          const vd = v.readVerdict(local)
+          for (let y = 0; y < c.height; y++) {
+            dose.set(f.subarray(y * c.width, (y + 1) * c.width), (c.y + y) * gw + c.x)
+            for (let x = 0; x < c.width; x++) verdict[(c.y + y) * gw + c.x + x] = vd[y * c.width + x]!
+          }
+        },
+      })
+      const hash = `dose ${bitsHash(dose)} · verdict ${bitsHash(verdict)}`
+      hashes.add(hash)
+      log(`result ${hash}`)
+      const s = [...warm].sort((a, b) => a - b)
+      rows.push(`${String(mib).padStart(5)} MiB · ${`${setup.plan.cols} × ${setup.plan.rows}`.padStart(7)} · ≤ ${String(side).padStart(4)}² · cold ${ms(cold.ms).padStart(10)} · warm median ${ms(s[Math.floor(s.length / 2)]!).padStart(10)} / max ${ms(s[s.length - 1]!).padStart(10)}`)
+      await mark(`${label}: done`)
+    } catch (e) {
+      log(`FAILED: ${String(e)}`)
+      rows.push(`${String(mib).padStart(5)} MiB · FAILED ${String(e)}`)
+      if (e instanceof GlContextLostError || gl!.isContextLost()) {
+        lost++
+        await mark(`${label}: LOST`)
+        await waitFor((f) => (restored = f), 10000)
+      }
+    }
+  }
+  sim.releaseTargets()
+  sim = new GlSim(gl!)
+  log()
+  log('-- summary --')
+  for (const r of rows) log(r)
+  log()
+  log(`${lost === 0 ? 'PASS' : 'FAIL'} no context loss (${lost} lost)`)
+  log(`${hashes.size === 1 ? 'PASS' : 'FAIL'} results bit-identical across budgets (${hashes.size} distinct hash${hashes.size === 1 ? '' : 'es'})`)
+  ;(window as unknown as { __benchTileSweep: string }).__benchTileSweep = lines.join('\n')
+}
+
+/**
  * BURN-41: the first detail run. Same 5 µm 100 mm job and 1920 × 1080-cell
  * view as runPitch, at this GPU's default cell budget and at the Iris Xe one.
  * Each budget times the app's sequence (fit, full run, first detail run, pans)
@@ -1248,9 +1339,9 @@ document.getElementById('fine')!.addEventListener('click', () => void runFine().
 document.getElementById('copy')!.addEventListener('click', () => void navigator.clipboard.writeText(lines.join('\n')))
 ;(window as unknown as { __runBench: typeof run; __runFine: typeof runFine }).__runBench = run
 
-/** ?auto=live (or run, fine, thermal, tiles, stages, pitch, detail; comma-separated): run on load and POST each report to the bench server. */
+/** ?auto=live (or run, fine, thermal, tiles, stages, pitch, detail, gpumem, tilesweep; comma-separated): run on load and POST each report to the bench server. */
 async function autoRun(names: string[]): Promise<void> {
-  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages, pitch: runPitch, detail: runDetailBench, gpumem: runGpuMem }
+  const runs: Record<string, () => Promise<unknown>> = { run, fine: runFine, thermal: runThermal, live: () => runLive(), tiles: runTiles, stages: runStages, pitch: runPitch, detail: runDetailBench, gpumem: runGpuMem, tilesweep: runTileSweep }
   for (const name of names) {
     const fn = runs[name]
     if (!fn) {
