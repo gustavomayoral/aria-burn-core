@@ -1,0 +1,236 @@
+BURN-43 tile size vs GPU budget, WebView2 (Aria Burn app) on Windows / Intel Iris Xe, run 2026-11-05.
+Windows 11 Home 26H2 (10.0.26300.9818) · WebView2 Runtime 156.0.4314.58 · Intel Iris Xe (0x9A49), driver
+30.0.101.1191, ANGLE / Direct3D 11 · 16 GB RAM, on AC power · all binaries x64.
+aria-burn-core burn-43 at 384ee96 (main 9d6d3cf, BURN-38's vertex windows, plus the ?auto=tilesweep bench; no sim
+change) · aria-burn main 9232a1a (debug build, unchanged). Bench server `npx vite bench --port 5299 --strictPort` on
+the laptop. Runs start on the logged-in desktop (one-shot interactive scheduled task, C:\Users\gusta\src\_claude\
+winrun.ps1, ARIA_BURN_BENCH_URL=http://localhost:5299/?auto=tilesweep&budgets=…&warm=5) with a 1 Hz sampler of
+"\GPU Process Memory(*)\Shared Usage" for the browser GPU process (mem2.ps1). The laptop's Claude app and WSL stayed
+open; free RAM before each run is given. No build, test or other bench ran.
+
+?auto=tilesweep: the 5 µm 100 mm raster (19.7 M samples, birch with the thermal step) at this GPU's default job cell
+budget (50 M → 15 µm, 6671 × 6680 cells). Per GPU budget: a new GlSim({ gpuBudgetBytes }), fit (thermal step, timed
+but not part of full-res), one cold full run, 5 warm full runs, then an untimed run that reads every tile core back
+and hashes the stitched dose and verdict.
+
+Summary
+- The premise of BURN-43 is gone: since BURN-38 the per-sample data sits in bounded vertex windows, fit leaves
+  341 MiB resident, and the 768 MiB default now plans 15 µm as 2 × 2 tiles of ≤ 3347², not 7 × 7 of ~953²
+  (BURN-37). Warm full-res at 768 MiB, 15 runs over 3 fresh processes: median 1286 ms, max 1653 ms (BURN-37 at 7 × 7:
+  median 1583, max 1830). Cold 862 / 1464 / 1308 ms.
+- Only two plans exist for this job: 2 × 2 (pool 182 MiB) up to ~1063 MiB, and one tile of 6680² (pool 723 MiB)
+  from ~1064 MiB. 1024 MiB plans the same 2 × 2 as 768; 1280 and 1536 the same 1 × 1.
+- One tile is faster warm: median 1072 ms, max 1413 ms (15 runs, 3 fresh processes), ~200 ms under 2 × 2. But:
+  · The WebView2 GPU process peaks at 2018 / 2583 / 2064 MiB (fresh processes) and up to 2793 MiB in the sweeps,
+    against 1068–1070 MiB at 768. That is at or over the ~2.37 GB level where WebView2 lost the context in
+    BURN-38; there is no margin.
+  · Free RAM falls to 182–305 MiB (19 MiB once in a sweep) from ~6.8 GB, so the laptop pages. At 768 it stays
+    above 1.6 GB.
+  · Cold isn't better: 1175 / 1631 / 1999 ms vs 862 / 1464 / 1308 at 768.
+  · Edge lost the context once in 3 fresh runs at 1536 MiB (burn-43-tiles-edge-windows-irisxe.txt).
+  · Not bit-identical: one tile deposits unbinned (time order), several tiles deposit through the spatial bins
+    (bucket order), so float blending sums in a different order. Dose hashes 20715b68 (2 × 2) vs 5e91c9bf (1 × 1),
+    verdict ff77a0e5 in both. Within multi-tile plans the hash doesn't change with the tile side (768 vs 1024 here;
+    10 × 10 vs 2 × 2 on the M1). The bench's "FAIL results bit-identical" lines are this 1 × 1 vs 2 × 2 difference.
+- No context loss in WebView2 in any run (8 processes, 26 budget steps).
+- Decision: keep the Intel-integrated default at 768 MiB. No gain worth the memory: the default already plans the
+  largest multi-tile split, and it is under 2 s with ~350 ms to spare.
+- In-process sweeps are noisier than fresh processes: after a 1 × 1 step has starved RAM, the next steps run slow
+  (2 × 2 warm 1154–2262 ms after 1 × 1 in run 2, vs 758–834 ms when 2 × 2 ran first in run 1).
+
+Fresh processes, one budget each, alternating (runs 3–8)
+  budget    tiles   cold ms   warm ms (×5)                        median   max    GPU process peak   least RAM free
+  768 MiB   2 × 2    862      1291 1653 1541 1201 1286            1291    1653        1069 MiB          1798 MiB
+  1536 MiB  1 × 1   1175      1102 1177 1072 1120  977            1102    1177        2064 MiB           305 MiB
+  768 MiB   2 × 2   1464      1395 1412 1200 1254 1217            1254    1412        1070 MiB          1946 MiB
+  1536 MiB  1 × 1   1631       959 1080 1413 1116  972            1080    1413        2583 MiB           182 MiB
+  768 MiB   2 × 2   1308      1357 1251 1392 1255 1213            1255    1392        1068 MiB          1919 MiB
+  1536 MiB  1 × 1   1999       929 1057 1120  997 1004            1004    1120        2018 MiB           248 MiB
+  pooled: 768 MiB median 1286 / max 1653 ms · 1536 MiB median 1072 / max 1413 ms
+
+=== 1. WebView2, one process, budgets 768 → 1536 · free RAM before 6510 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 768, 1024, 1280, 1536 MiB · warm ×5
+
+-- GPU budget 768 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 2 × 2, padded ≤ 3347² (pool 182 MiB) · ledger after fit 341 MiB · fit 4171.0 ms
+full-res: cold 859.4 ms · warm ×5 min 758.2 ms / median 764.4 ms / max 1276.9 ms · all warm: 764, 758, 763, 834, 1277 ms
+result dose 20715b68 · verdict ff77a0e5
+
+-- GPU budget 1024 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 2 × 2, padded ≤ 3347² (pool 182 MiB) · ledger after fit 285 MiB · fit 1278.0 ms
+full-res: cold 1737.3 ms · warm ×5 min 1153.9 ms / median 1345.9 ms / max 1700.5 ms · all warm: 1701, 1346, 1237, 1154, 1413 ms
+result dose 20715b68 · verdict ff77a0e5
+
+-- GPU budget 1280 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 1 × 1, padded ≤ 6680² (pool 723 MiB) · ledger after fit 285 MiB · fit 773.0 ms
+full-res: cold 2674.8 ms · warm ×5 min 942.3 ms / median 1095.4 ms / max 1744.4 ms · all warm: 1744, 1173, 1095, 942, 967 ms
+result dose 5e91c9bf · verdict ff77a0e5
+
+-- GPU budget 1536 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 1 × 1, padded ≤ 6680² (pool 723 MiB) · ledger after fit 285 MiB · fit 1051.3 ms
+full-res: cold 2866.7 ms · warm ×5 min 857.6 ms / median 1508.2 ms / max 3017.6 ms · all warm: 3018, 1657, 1508, 900, 858 ms
+result dose 5e91c9bf · verdict ff77a0e5
+
+-- summary --
+  768 MiB ·   2 × 2 · ≤ 3347² · cold   859.4 ms · warm median   764.4 ms / max  1276.9 ms
+ 1024 MiB ·   2 × 2 · ≤ 3347² · cold  1737.3 ms · warm median  1345.9 ms / max  1700.5 ms
+ 1280 MiB ·   1 × 1 · ≤ 6680² · cold  2674.8 ms · warm median  1095.4 ms / max  1744.4 ms
+ 1536 MiB ·   1 × 1 · ≤ 6680² · cold  2866.7 ms · warm median  1508.2 ms / max  3017.6 ms
+
+PASS no context loss (0 lost)
+FAIL results bit-identical across budgets (2 distinct hashes)
+browser GPU process, shared GPU memory (1 Hz):
+   768 MiB: peak 1070 MiB · at end of step 753 MiB · least RAM free 1611 MiB
+  1024 MiB: peak 1211 MiB · at end of step 1201 MiB · least RAM free 1456 MiB
+  1280 MiB: peak 2793 MiB · at end of step 2153 MiB · least RAM free 179 MiB
+  1536 MiB: peak 2777 MiB · at end of step 709 MiB · least RAM free 163 MiB
+
+=== 2. WebView2, one process, budgets 1536 → 768 · free RAM before 6767 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 1536, 1280, 1024, 768 MiB · warm ×5
+
+-- GPU budget 1536 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 1 × 1, padded ≤ 6680² (pool 723 MiB) · ledger after fit 341 MiB · fit 3814.4 ms
+full-res: cold 1423.0 ms · warm ×5 min 936.4 ms / median 1295.4 ms / max 1978.8 ms · all warm: 1295, 1979, 1401, 1190, 936 ms
+result dose 5e91c9bf · verdict ff77a0e5
+
+-- GPU budget 1280 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 1 × 1, padded ≤ 6680² (pool 723 MiB) · ledger after fit 285 MiB · fit 1253.2 ms
+full-res: cold 3773.6 ms · warm ×5 min 905.2 ms / median 1883.8 ms / max 2345.3 ms · all warm: 2345, 1943, 1884, 1236, 905 ms
+result dose 5e91c9bf · verdict ff77a0e5
+
+-- GPU budget 1024 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 2 × 2, padded ≤ 3347² (pool 182 MiB) · ledger after fit 285 MiB · fit 2217.6 ms
+full-res: cold 3511.6 ms · warm ×5 min 1272.3 ms / median 1571.2 ms / max 2261.5 ms · all warm: 2152, 2262, 1571, 1357, 1272 ms
+result dose 20715b68 · verdict ff77a0e5
+
+-- GPU budget 768 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 2 × 2, padded ≤ 3347² (pool 182 MiB) · ledger after fit 285 MiB · fit 1583.0 ms
+full-res: cold 1299.6 ms · warm ×5 min 1154.9 ms / median 1184.1 ms / max 1213.4 ms · all warm: 1213, 1195, 1184, 1184, 1155 ms
+result dose 20715b68 · verdict ff77a0e5
+
+-- summary --
+ 1536 MiB ·   1 × 1 · ≤ 6680² · cold  1423.0 ms · warm median  1295.4 ms / max  1978.8 ms
+ 1280 MiB ·   1 × 1 · ≤ 6680² · cold  3773.6 ms · warm median  1883.8 ms / max  2345.3 ms
+ 1024 MiB ·   2 × 2 · ≤ 3347² · cold  3511.6 ms · warm median  1571.2 ms / max  2261.5 ms
+  768 MiB ·   2 × 2 · ≤ 3347² · cold  1299.6 ms · warm median  1184.1 ms / max  1213.4 ms
+
+PASS no context loss (0 lost)
+FAIL results bit-identical across budgets (2 distinct hashes)
+browser GPU process, shared GPU memory (1 Hz):
+  1536 MiB: peak 2447 MiB · at end of step 1507 MiB · least RAM free 459 MiB
+  1280 MiB: peak 2706 MiB · at end of step 2082 MiB · least RAM free 19 MiB
+  1024 MiB: peak 1292 MiB · at end of step 1201 MiB · least RAM free 1486 MiB
+   768 MiB: peak 1227 MiB · at end of step 613 MiB · least RAM free 2801 MiB
+
+=== 3. WebView2, fresh process, 768 MiB (round 1) · free RAM before 6814 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 768 MiB · warm ×5
+
+-- GPU budget 768 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 2 × 2, padded ≤ 3347² (pool 182 MiB) · ledger after fit 341 MiB · fit 4161.0 ms
+full-res: cold 861.6 ms · warm ×5 min 1201.2 ms / median 1291.1 ms / max 1652.6 ms · all warm: 1291, 1653, 1541, 1201, 1286 ms
+result dose 20715b68 · verdict ff77a0e5
+
+-- summary --
+  768 MiB ·   2 × 2 · ≤ 3347² · cold   861.6 ms · warm median  1291.1 ms / max  1652.6 ms
+
+PASS no context loss (0 lost)
+PASS results bit-identical across budgets (1 distinct hash)
+browser GPU process, shared GPU memory (1 Hz):
+   768 MiB: peak 1069 MiB · at end of step 576 MiB · least RAM free 1798 MiB
+
+=== 4. WebView2, fresh process, 1536 MiB (round 1) · free RAM before 6783 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 1536 MiB · warm ×5
+
+-- GPU budget 1536 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 1 × 1, padded ≤ 6680² (pool 723 MiB) · ledger after fit 341 MiB · fit 3790.7 ms
+full-res: cold 1174.9 ms · warm ×5 min 977.4 ms / median 1101.8 ms / max 1176.9 ms · all warm: 1102, 1177, 1072, 1120, 977 ms
+result dose 5e91c9bf · verdict ff77a0e5
+
+-- summary --
+ 1536 MiB ·   1 × 1 · ≤ 6680² · cold  1174.9 ms · warm median  1101.8 ms / max  1176.9 ms
+
+PASS no context loss (0 lost)
+PASS results bit-identical across budgets (1 distinct hash)
+browser GPU process, shared GPU memory (1 Hz):
+  1536 MiB: peak 2064 MiB · at end of step 560 MiB · least RAM free 305 MiB
+
+=== 5. WebView2, fresh process, 768 MiB (round 2) · free RAM before 6814 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 768 MiB · warm ×5
+
+-- GPU budget 768 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 2 × 2, padded ≤ 3347² (pool 182 MiB) · ledger after fit 341 MiB · fit 5529.5 ms
+full-res: cold 1463.7 ms · warm ×5 min 1199.5 ms / median 1254.3 ms / max 1411.5 ms · all warm: 1395, 1412, 1200, 1254, 1217 ms
+result dose 20715b68 · verdict ff77a0e5
+
+-- summary --
+  768 MiB ·   2 × 2 · ≤ 3347² · cold  1463.7 ms · warm median  1254.3 ms / max  1411.5 ms
+
+PASS no context loss (0 lost)
+PASS results bit-identical across budgets (1 distinct hash)
+browser GPU process, shared GPU memory (1 Hz):
+   768 MiB: peak 1070 MiB · at end of step 575 MiB · least RAM free 1946 MiB
+
+=== 6. WebView2, fresh process, 1536 MiB (round 2) · free RAM before 6799 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 1536 MiB · warm ×5
+
+-- GPU budget 1536 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 1 × 1, padded ≤ 6680² (pool 723 MiB) · ledger after fit 341 MiB · fit 4350.8 ms
+full-res: cold 1631.4 ms · warm ×5 min 958.9 ms / median 1080.1 ms / max 1412.5 ms · all warm: 959, 1080, 1413, 1116, 972 ms
+result dose 5e91c9bf · verdict ff77a0e5
+
+-- summary --
+ 1536 MiB ·   1 × 1 · ≤ 6680² · cold  1631.4 ms · warm median  1080.1 ms / max  1412.5 ms
+
+PASS no context loss (0 lost)
+PASS results bit-identical across budgets (1 distinct hash)
+browser GPU process, shared GPU memory (1 Hz):
+  1536 MiB: peak 2583 MiB · at end of step 561 MiB · least RAM free 182 MiB
+
+=== 7. WebView2, fresh process, 768 MiB (round 3) · free RAM before 6921 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 768 MiB · warm ×5
+
+-- GPU budget 768 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 2 × 2, padded ≤ 3347² (pool 182 MiB) · ledger after fit 341 MiB · fit 6021.4 ms
+full-res: cold 1308.3 ms · warm ×5 min 1213.2 ms / median 1254.8 ms / max 1391.6 ms · all warm: 1357, 1251, 1392, 1255, 1213 ms
+result dose 20715b68 · verdict ff77a0e5
+
+-- summary --
+  768 MiB ·   2 × 2 · ≤ 3347² · cold  1308.3 ms · warm median  1254.8 ms / max  1391.6 ms
+
+PASS no context loss (0 lost)
+PASS results bit-identical across budgets (1 distinct hash)
+browser GPU process, shared GPU memory (1 Hz):
+   768 MiB: peak 1068 MiB · at end of step 575 MiB · least RAM free 1919 MiB
+
+=== 8. WebView2, fresh process, 1536 MiB (round 3) · free RAM before 6896 MB ===
+[auto=tilesweep]
+== Tile size vs GPU budget (BURN-43) · ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11) ==
+samples 19,688,836 · birch with the thermal step · budgets 1536 MiB · warm ×5
+
+-- GPU budget 1536 MiB --
+pitch 15.0 µm (k = 3) · grid 6671 × 6680 · tiles 1 × 1, padded ≤ 6680² (pool 723 MiB) · ledger after fit 341 MiB · fit 4841.4 ms
+full-res: cold 1998.9 ms · warm ×5 min 929.4 ms / median 1003.7 ms / max 1120.2 ms · all warm: 929, 1057, 1120, 997, 1004 ms
+result dose 5e91c9bf · verdict ff77a0e5
+
+-- summary --
+ 1536 MiB ·   1 × 1 · ≤ 6680² · cold  1998.9 ms · warm median  1003.7 ms / max  1120.2 ms
+
+PASS no context loss (0 lost)
+PASS results bit-identical across budgets (1 distinct hash)
+browser GPU process, shared GPU memory (1 Hz):
+  1536 MiB: peak 2018 MiB · at end of step 560 MiB · least RAM free 248 MiB
+
