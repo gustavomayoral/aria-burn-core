@@ -2,8 +2,8 @@
 // SVG import layer settings (BURN-50, feature BURN-49).
 //
 // One per colour layer of an imported SVG, as LightBurn sets up its cut layers.
-// TypeBox so the Rust side can generate types once the project file (BURN-55)
-// needs them; not in ROOT_SCHEMAS yet, so the generated bundle is unchanged.
+// TypeBox, so they validate inside the project file (BURN-55, project.ts).
+// The webview reads that file, so they stay out of ROOT_SCHEMAS and the Rust bundle.
 //
 // Power: min power is stored and shown for parity with LightBurn, but the
 // simulation uses max power only. GRBL M4 already scales power with speed, and
