@@ -95,7 +95,7 @@ interface Laid {
 function layOut(ctx: PatternContext, gen: PatternGenerator<Record<string, unknown>>, opts: Record<string, unknown>, scale: number, registration: boolean): Laid {
   const draft = gen.build(ctx, opts, scale)
   for (const c of draft.cells) c.rectMm = burnedRect(c.rectMm, c.settings)
-  const probe = new Toolpath(ctx, true)
+  const probe = new Toolpath(ctx, { measure: true })
   probe.start()
   draft.draw(probe)
   let extra = null

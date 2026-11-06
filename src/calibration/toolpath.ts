@@ -4,17 +4,62 @@
 // app checks the two agree for every catalog machine (aria-burn job.rs).
 //
 // Dialect: G21 G90, M4 dynamic power, explicit G0/G1 on every move, words
-// written only when they change, coordinates to 0.001 mm and S to 0.1. No
-// comment uses LightBurn's pass forms ("… @ … mm/…", "Pass n"), so the parser
-// keeps the job as one pass.
+// written only when they change, coordinates to 0.001 mm and S to 0.1.
+//
+// Used by the calibration patterns (BURN-32) and SVG import (BURN-51). It only
+// needs a small context: the machine profile, the bed and the rapid rate.
+//
+// Passes: comments in LightBurn's layer and pass forms ("Layer C00",
+// "… @ … mm/…", "Pass n") split the job the way the parser's passes.rs does,
+// and without them a job whose burned geometry is one block repeated is split
+// into repeats, with the parser's multi-pass warning. Calibration patterns
+// write none of those comments and repeat no geometry, so they stay one pass.
 //
 // The focus pattern (BURN-47) also writes program pauses (M0) or relative Z
 // steps (G91 G0 Z…, then G90). The v1 parser ignores both with a warning, once
 // per code at its first line; the job model carries the same warnings.
 
 import { CONTRACT_VERSION, type BoundsMm, type Diagnostic, type JobModel, type LaserMode, type Move } from '../contract/index.ts'
-import type { PatternContext } from './context.ts'
+import type { MachineProfile, Pass } from '../contract/index.ts'
 import { PatternFitError, type CellSettings, type ScanAxis } from './types.ts'
+
+/** What the toolpath needs to know about the machine. A PatternContext is one. */
+export interface ToolpathContext {
+  machine: MachineProfile
+  /** Usable bed (mm). Moves outside it throw, unless `checkBed` is off. */
+  bedMm: { x: number; y: number }
+  /** Rapid rate for the time estimate (mm/min). Default: the slower of $110/$111. */
+  rapidRateMmPerMin?: number
+}
+
+export interface ToolpathOptions {
+  /** Build without the bed check, to find an extent in local coordinates before placing it. */
+  measure?: boolean
+  /** Throw PatternFitError on a move outside the bed. Default true; SVG import reports instead. */
+  checkBed?: boolean
+}
+
+/** A pass boundary from a comment, as the parser's passes.rs `Marker` reads it. */
+export interface PassMarker {
+  /** Index of the first move after the comment. */
+  moveIndex: number
+  line: number
+  /** Set for a `Layer …` comment: the layer name. */
+  layer?: string
+}
+
+/** The parser's reading of a comment (passes.rs `Marker::from_comment`), without the leading `;`. */
+export function passMarker(comment: string, moveIndex: number, line: number): PassMarker | null {
+  const text = comment.trim()
+  const lower = text.toLowerCase()
+  if (lower.startsWith('layer') && (lower[5] === ' ' || lower[5] === ':')) {
+    const name = text.slice(5).replace(/^[ :]+/, '').trim()
+    return { moveIndex, line, layer: name }
+  }
+  const settings = lower.includes(' @ ') && lower.includes('mm/')
+  const pass = lower.startsWith('pass ') && /^[0-9]/.test(lower.slice(5))
+  return settings || pass ? { moveIndex, line } : null
+}
 
 /** One beam-on run along the scan axis, from `a0` to `a1` (mm on that axis). */
 export interface Span {
@@ -30,8 +75,90 @@ const fmt = (v: number): string => {
 const fmtS = (v: number): string => (Math.round(v * 10) / 10).toFixed(1).replace(/\.0$/, '')
 const snap = (v: number) => Number(fmt(v))
 
-export class Toolpath {
+/** Rust's f64::round: half away from zero. */
+const roundAway = (v: number) => Math.sign(v) * Math.round(Math.abs(v))
+
+/** Burned move ends quantised to 0.1 µm, as passes.rs compares them. */
+function burnedKeys(moves: readonly Move[], from = 0, to = moves.length): { index: number[]; keys: string[] } {
+  const index: number[] = []
+  const keys: string[] = []
+  for (let i = from; i < to; i++) {
+    const m = moves[i]!
+    if (m.kind === 'g1' && m.laser !== 'off' && m.s > 0) {
+      index.push(i - from)
+      keys.push(`${roundAway(m.xMm * 1e4)},${roundAway(m.yMm * 1e4)}`)
+    }
+  }
+  return { index, keys }
+}
+
+/** Pass starts (excluding 0) when the burned geometry is one block repeated (passes.rs `repeated_blocks`). */
+function repeatedBlocks(moves: readonly Move[]): number[] {
+  const { index, keys } = burnedKeys(moves)
+  const n = keys.length
+  let block = 0
+  for (let b = 1; b <= Math.floor(n / 2) && !block; b++) {
+    if (n % b !== 0) continue
+    let ok = true
+    for (let k = b; k < n && ok; k++) ok = keys[k] === keys[k % b]
+    if (ok) block = b
+  }
+  if (!block) return []
+  const out: number[] = []
+  for (let t = 1; t < n / block; t++) out.push(index[t * block - 1]! + 1)
+  return out
+}
+
+/**
+ * The parser's pass split (passes.rs `split`): passes covering `moves`, and
+ * where the first repeat starts and how many times the most repeated burned
+ * geometry is burned, when some pass repeats another.
+ */
+export function splitPasses(moves: readonly Move[], markers: readonly PassMarker[]): { passes: Pass[]; repeated: { line: number; count: number } | null } {
+  if (!moves.length) return { passes: [], repeated: null }
+  const starts: { first: number; label?: string }[] = [{ first: 0 }]
+  let layer: string | undefined
+  for (const m of markers) {
+    if (m.layer !== undefined) layer = m.layer
+    if (m.moveIndex >= moves.length) continue
+    const last = starts[starts.length - 1]!
+    if (last.first === m.moveIndex) {
+      if (layer === undefined) delete last.label
+      else last.label = layer
+    } else starts.push(layer === undefined ? { first: m.moveIndex } : { first: m.moveIndex, label: layer })
+  }
+  if (starts.length === 1) for (const s of repeatedBlocks(moves)) starts.push({ first: s })
+
+  const passes: Pass[] = starts.map((s, index) => {
+    const end = starts[index + 1]?.first ?? moves.length
+    return { index, firstMove: s.first, moveCount: end - s.first, ...(s.label !== undefined ? { label: s.label } : {}) }
+  })
+  const keys = passes.map((p) => burnedKeys(moves, p.firstMove, p.firstMove + p.moveCount).keys.join(';'))
+  let repeated: { line: number; count: number } | null = null
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i]!
+    if (!key || keys.slice(0, i).includes(key)) continue
+    const copies: number[] = []
+    for (let j = i + 1; j < keys.length; j++) if (keys[j] === key) copies.push(j)
+    if (!copies.length) continue
+    const p = passes[copies[0]!]!
+    const first = burnedKeys(moves, p.firstMove, p.firstMove + p.moveCount).index[0]
+    const line = first === undefined ? 0 : moves[p.firstMove + first]!.line
+    const count = copies.length + 1
+    repeated = repeated ? { line: Math.min(repeated.line, line), count: Math.max(repeated.count, count) } : { line, count }
+  }
+  return { passes, repeated }
+}
+
+/**
+ * Builds G-code and its JobModel in lockstep. `T` is an optional tag recorded
+ * for every line written (SVG import maps lines back to layers and paths).
+ */
+export class Toolpath<T = never> {
   private readonly lines: string[] = []
+  private readonly tags: (T | null)[] = []
+  private tag: T | null = null
+  private readonly markers: PassMarker[] = []
   private readonly moves: Move[] = []
   private x = 0
   private y = 0
@@ -49,15 +176,29 @@ export class Toolpath {
   /** Net relative Z written so far (mm); the focus pattern returns it to 0. */
   private zNet = 0
 
-  /**
-   * `measure` builds without the bed check, to find a pattern's extent in its
-   * local coordinates before it is placed.
-   */
+  private readonly checkBed: boolean
+
   constructor(
-    private readonly ctx: PatternContext,
-    private readonly measure = false,
+    private readonly ctx: ToolpathContext,
+    options: ToolpathOptions = {},
   ) {
-    this.rapidRate = Math.min(ctx.machine.maxRateMmPerMin.x, ctx.machine.maxRateMmPerMin.y)
+    this.rapidRate = ctx.rapidRateMmPerMin ?? Math.min(ctx.machine.maxRateMmPerMin.x, ctx.machine.maxRateMmPerMin.y)
+    this.checkBed = !options.measure && (options.checkBed ?? true)
+  }
+
+  /** The tag recorded for the lines written from now on (null for none). */
+  setTag(tag: T | null): void {
+    this.tag = tag
+  }
+
+  /** One tag per G-code line, in order (index = line - 1). */
+  lineTags(): (T | null)[] {
+    return [...this.tags]
+  }
+
+  private emit(line: string): void {
+    this.lines.push(line)
+    this.tags.push(this.tag)
   }
 
   setOffset(dx: number, dy: number): void {
@@ -83,27 +224,30 @@ export class Toolpath {
   }
 
   comment(text: string): void {
-    this.lines.push(`; ${text.replace(/[\r\n]/g, ' ')}`)
+    const t = text.replace(/[\r\n]/g, ' ')
+    this.emit(`; ${t}`)
+    const marker = passMarker(t, this.moves.length, this.lines.length)
+    if (marker) this.markers.push(marker)
   }
 
   /** Units, absolute mode and M4 with the beam off. */
   start(): void {
-    this.lines.push('G21 G90')
-    this.lines.push('M4 S0')
+    this.emit('G21 G90')
+    this.emit('M4 S0')
     this.laser = 'm4'
     this.s = 0
   }
 
   /** Beam off and program end. */
   end(): void {
-    this.lines.push('M5 S0')
+    this.emit('M5 S0')
     this.laser = 'off'
     this.s = 0
-    this.lines.push('M2')
+    this.emit('M2')
   }
 
   private check(x: number, y: number): void {
-    if (this.measure) return
+    if (!this.checkBed) return
     const { x: bx, y: by } = this.ctx.bedMm
     if (x < -1e-9 || y < -1e-9 || x > bx + 1e-9 || y > by + 1e-9)
       throw new PatternFitError(`move to (${fmt(x)}, ${fmt(y)}) mm is outside the ${fmt(bx)} × ${fmt(by)} mm bed`)
@@ -119,13 +263,13 @@ export class Toolpath {
    * M4 S0 again. The operator resumes (cycle start) when done.
    */
   pause(instruction: string): void {
-    this.lines.push('M5 S0')
+    this.emit('M5 S0')
     this.laser = 'off'
     this.s = 0
     this.comment(`PAUSE: ${instruction}`)
-    this.lines.push('M0')
+    this.emit('M0')
     this.warnOnce('ignored-pause', 'Program pause (M0/M1) is ignored')
-    this.lines.push('M4 S0')
+    this.emit('M4 S0')
     this.laser = 'm4'
   }
 
@@ -133,9 +277,9 @@ export class Toolpath {
   zStep(dzMm: number): void {
     const dz = snap(dzMm)
     if (dz === 0) return
-    this.lines.push(`G91 G0 Z${fmt(dz)}`)
+    this.emit(`G91 G0 Z${fmt(dz)}`)
     this.warnOnce('ignored-z', 'Z moves are ignored in v1')
-    this.lines.push('G90')
+    this.emit('G90')
     this.zNet = snap(this.zNet + dz)
   }
 
@@ -148,7 +292,7 @@ export class Toolpath {
     const [nx, ny] = [snap(x + this.ox), snap(y + this.oy)]
     if (nx === this.x && ny === this.y) return
     this.check(nx, ny)
-    this.lines.push(`G0 X${fmt(nx)} Y${fmt(ny)}`)
+    this.emit(`G0 X${fmt(nx)} Y${fmt(ny)}`)
     this.timeS += Math.hypot(nx - this.x, ny - this.y) / (this.rapidRate / 60)
     this.push('g0', nx, ny)
   }
@@ -163,7 +307,7 @@ export class Toolpath {
     let line = `G1 X${fmt(nx)} Y${fmt(ny)}`
     if (f !== this.feed) line += ` F${f}`
     if (ns !== this.s) line += ` S${fmtS(ns)}`
-    this.lines.push(line)
+    this.emit(line)
     this.feed = f
     this.s = ns
     this.timeS += Math.hypot(nx - this.x, ny - this.y) / (f / 60)
@@ -257,15 +401,24 @@ export class Toolpath {
       px = m.xMm
       py = m.yMm
     }
+    const { passes, repeated } = splitPasses(moves, this.markers)
+    const diagnostics = this.diagnostics.map((d) => ({ ...d }))
+    if (repeated)
+      diagnostics.push({
+        severity: 'warning',
+        code: 'multi-pass',
+        message: `Same geometry is burned in ${repeated.count} passes; v1 simulates all passes as one deposit, so multi-pass jobs will over-darken`,
+        line: repeated.line,
+      })
     return {
       contractVersion: CONTRACT_VERSION,
       source: { kind: 'file', name, lineCount: this.lines.length },
       startMm: { xMm: 0, yMm: 0 },
       moves,
-      passes: moves.length ? [{ index: 0, firstMove: 0, moveCount: moves.length }] : [],
+      passes,
       bounds: all,
       burnBounds: burn,
-      diagnostics: this.diagnostics.map((d) => ({ ...d })),
+      diagnostics,
     }
   }
 }

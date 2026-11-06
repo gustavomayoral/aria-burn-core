@@ -34,7 +34,11 @@ export interface ContextOptions {
   bedMm?: { x: number; y: number }
 }
 
-export function patternContext(machine: MachineProfile, material: MaterialProfile, options: ContextOptions = {}): PatternContext {
+/**
+ * The usable bed (mm): the machine's travel, the frame's work area when it is
+ * a catalog frame, and `override` (e.g. a smaller sheet), whichever is smallest.
+ */
+export function usableBedMm(machine: MachineProfile, override?: { x: number; y: number }): { x: number; y: number } {
   let x = machine.travelMm.x
   let y = machine.travelMm.y
   const frame = machine.frameId ? findFrame(machine.frameId) : undefined
@@ -42,11 +46,15 @@ export function patternContext(machine: MachineProfile, material: MaterialProfil
     x = Math.min(x, frame.workAreaMm.x)
     y = Math.min(y, frame.workAreaMm.y)
   }
-  if (options.bedMm) {
-    x = Math.min(x, options.bedMm.x)
-    y = Math.min(y, options.bedMm.y)
+  if (override) {
+    x = Math.min(x, override.x)
+    y = Math.min(y, override.y)
   }
-  return { machine, material, bedMm: { x, y } }
+  return { x, y }
+}
+
+export function patternContext(machine: MachineProfile, material: MaterialProfile, options: ContextOptions = {}): PatternContext {
+  return { machine, material, bedMm: usableBedMm(machine, options.bedMm) }
 }
 
 export function machineInfo(ctx: PatternContext): PatternMachineInfo {

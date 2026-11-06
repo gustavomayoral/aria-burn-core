@@ -17,7 +17,8 @@
     "./profiles/provisional/*": "./src/profiles/provisional/*",
     "./profiles/catalog/*": "./src/profiles/catalog/*",
     "./calibration": "./src/calibration/index.ts",
-    "./svg": "./src/svg/index.ts"
+    "./svg": "./src/svg/index.ts",
+    "./svg/fixtures/*": "./src/svg/fixtures/*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
