@@ -167,7 +167,7 @@ describe('line mode', () => {
     expect(none.diagnostics.map((d) => d.code)).toEqual(['nothing-to-burn'])
   })
 
-  it('layers burn in list order; unknown, duplicate and fill layers are reported', () => {
+  it('layers burn in list order; unknown and duplicate layers are reported', () => {
     const doc = svg(
       'width="50mm" height="50mm" viewBox="0 0 50 50"',
       '<path d="M5,5 H15" stroke="#000000"/><path d="M5,25 H15" stroke="#ff0000"/><rect x="30" y="30" width="5" height="5" fill="#0000ff"/>',
@@ -178,11 +178,10 @@ describe('line mode', () => {
     const c02 = base.find((l) => l.id === 'C02')!
     expect(c01.settings.mode).toBe('fill')
     const r = svgJob(doc, [c02, c00, { id: 'C09', settings: c00.settings }, c00, c01], DEFAULT_PLACEMENT, MACHINE)
-    expect(r.job.passes.map((p) => p.label)).toEqual(['C02', 'C00'])
+    expect(r.job.passes.map((p) => p.label)).toEqual(['C02', 'C00', 'C01'])
     expect(r.diagnostics.map((d) => [d.code, d.layer])).toEqual([
       ['unknown-layer', 'C09'],
       ['duplicate-layer', 'C00'],
-      ['fill-not-available', 'C01'],
     ])
   })
 

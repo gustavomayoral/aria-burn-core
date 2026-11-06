@@ -19,16 +19,27 @@
 // Layers go in list order with G0 travel between paths, and each pass repeats
 // the layer's moves in the same order.
 //
+// Fill mode (BURN-52) scans the layer's closed shapes together (fill.ts):
+// each shape by its own fill rule, the layer as their union, lines bottom to
+// top along the scan normal. Each line runs at S0 for the overscan before its
+// first span and after its last (G1 S0 at the layer's F, as LightBurn writes
+// it for GRBL), and gaps between spans on a line are crossed the same way, not
+// with G0. Back-and-forth reverses every other line; one-direction scanning
+// returns with G0. Crosshatch scans again at angle + 90° in the same pass.
+// Open paths on a fill layer are reported and skipped.
+//
 // Power: M4 with S at max power % of $30 and F from the layer's speed. Min
 // power is not simulated (BURN-49). A layer with output off, or hidden, writes
-// no moves. Fill mode is BURN-52: a fill layer is reported and skipped here.
+// no moves.
 //
 // Comments: "; Layer <id>" before each layer and "; Line @ F mm/min, P% power"
-// before each pass, so the parser (passes.rs) labels the passes by layer.
+// (or "; Fill @ …") before each pass, so the parser (passes.rs) labels the
+// passes by layer. "; Crosshatch at … deg" matches no pass form.
 
-import type { BoundsMm, JobModel, LayerSettings, MachineProfile } from '../contract/index.ts'
+import { SCAN_OFFSET_ANGLE_DEG, type BoundsMm, type JobModel, type LayerSettings, type MachineProfile } from '../contract/index.ts'
 import { usableBedMm } from '../calibration/context.ts'
 import { Toolpath } from '../calibration/toolpath.ts'
+import { scanLines, scanToBed, type FillShape, type ScanLine } from './fill.ts'
 import { apply, type Matrix } from './matrix.ts'
 import { placementMatrix, transformedBounds, type Placement } from './placement.ts'
 import type { SvgDocument } from './read.ts'
@@ -64,7 +75,15 @@ export interface SvgJobOptions {
   name?: string
 }
 
-export type SvgJobDiagnosticCode = 'off-bed' | 'fill-not-available' | 'unknown-layer' | 'duplicate-layer' | 'speed-above-max-rate' | 'nothing-to-burn'
+export type SvgJobDiagnosticCode =
+  | 'off-bed'
+  | 'overscan-off-bed'
+  | 'fill-open-paths'
+  | 'fill-scan-offset'
+  | 'unknown-layer'
+  | 'duplicate-layer'
+  | 'speed-above-max-rate'
+  | 'nothing-to-burn'
 
 export interface SvgJobDiagnostic {
   severity: 'warning' | 'error'
@@ -83,7 +102,7 @@ export interface SvgSourceMap {
   layer: Int32Array
   /** Index into SvgDocument.shapes. */
   shape: Int32Array
-  /** Subpath index within the shape. */
+  /** Subpath index within the shape; -1 on fill lines (a span is bounded by several). */
   subpath: Int32Array
   /** 0-based pass of the layer. */
   pass: Int32Array
@@ -336,10 +355,6 @@ export function svgJob(
     if (!settings.visible) continue
     for (const s of doc.layers[index]!.shapes) visibleShapes.add(s)
     if (!settings.output) continue
-    if (settings.mode !== 'line') {
-      diagnostics.push({ severity: 'warning', code: 'fill-not-available', message: `Layer ${id} is set to fill, which is not simulated yet; it is skipped`, layer: id })
-      continue
-    }
     if (settings.speedMmPerMin > maxRate)
       diagnostics.push({
         severity: 'warning',
@@ -356,6 +371,11 @@ export function svgJob(
   let hy = 0
   for (const { index, settings } of plan) {
     const layer = doc.layers[index]!
+    if (settings.mode === 'fill') {
+      const end = fillLayer(doc, index, settings, m, machine, tp, diagnostics)
+      if (end) [hx, hy] = end
+      continue
+    }
     const items: Item[] = []
     for (const si of lineShapes(doc, index)) {
       const shape = doc.shapes[si]!
@@ -419,6 +439,7 @@ export function svgJob(
   if (!job.burnBounds) diagnostics.push({ severity: 'warning', code: 'nothing-to-burn', message: 'No layer burns anything' })
 
   const designBounds = transformedBounds(doc, m, visibleShapes)
+  let designOff = false
   if (designBounds) {
     const over = [
       -designBounds.minXMm,
@@ -426,11 +447,24 @@ export function svgJob(
       designBounds.maxXMm - bedMm.x,
       designBounds.maxYMm - bedMm.y,
     ]
-    if (over.some((d) => d > 1e-6))
+    designOff = over.some((d) => d > 1e-6)
+    if (designOff)
       diagnostics.push({
         severity: 'warning',
         code: 'off-bed',
         message: `The design (${fmt(designBounds.minXMm)}, ${fmt(designBounds.minYMm)}) to (${fmt(designBounds.maxXMm)}, ${fmt(designBounds.maxYMm)}) mm leaves the ${fmt(bedMm.x)} × ${fmt(bedMm.y)} mm bed by up to ${fmt(Math.max(...over))} mm`,
+      })
+  }
+
+  // Fill overscan runs past the shapes, so it can leave the bed when the design doesn't.
+  const ext = tp.extent
+  if (!designOff && job.moves.length) {
+    const over = Math.max(-ext.minXMm, -ext.minYMm, ext.maxXMm - bedMm.x, ext.maxYMm - bedMm.y)
+    if (over > 1e-6)
+      diagnostics.push({
+        severity: 'warning',
+        code: 'overscan-off-bed',
+        message: `Fill overscan runs to (${fmt(ext.minXMm)}, ${fmt(ext.minYMm)}) to (${fmt(ext.maxXMm)}, ${fmt(ext.maxYMm)}) mm, up to ${fmt(over)} mm off the ${fmt(bedMm.x)} × ${fmt(bedMm.y)} mm bed; move the design in or lower the overscan`,
       })
   }
 
@@ -452,3 +486,105 @@ export function svgJob(
   return { gcode: tp.gcode(), job, sourceMap, diagnostics, matrix: m, bedMm, designBounds, estimatedTimeS: tp.estimatedTimeS }
 }
 
+
+/** Scan angles within this of 0° or 180° are corrected by the planner's scan offset (BURN-48). */
+const offAxis = (angleDeg: number): boolean => {
+  const d = ((angleDeg % 180) + 180) % 180
+  return Math.min(d, 180 - d) > SCAN_OFFSET_ANGLE_DEG
+}
+
+/**
+ * One fill layer's moves. Returns where the head ends, or null when the layer
+ * has nothing to fill (then it writes nothing, not even its comment).
+ */
+function fillLayer(
+  doc: SvgDocument,
+  index: number,
+  settings: LayerSettings,
+  m: Matrix,
+  machine: MachineProfile,
+  tp: Toolpath<SvgLineSource>,
+  diagnostics: SvgJobDiagnostic[],
+): [number, number] | null {
+  const layer = doc.layers[index]!
+  const shapes: FillShape[] = []
+  let open = 0
+  for (const si of layer.shapes) {
+    const shape = doc.shapes[si]!
+    const rings: Float64Array[] = []
+    for (const sp of shape.subpaths) {
+      const src = sp.points
+      if (!sp.closed) {
+        if (src.length >= 4) open++
+        continue
+      }
+      if (src.length < 6) continue
+      const pts = new Float64Array(src.length)
+      for (let p = 0; p < src.length; p += 2) {
+        const [x, y] = apply(m, src[p]!, src[p + 1]!)
+        pts[p] = x
+        pts[p + 1] = y
+      }
+      rings.push(pts)
+    }
+    if (rings.length) shapes.push({ rings, fillRule: shape.fillRule, shape: si })
+  }
+  if (open)
+    diagnostics.push({
+      severity: 'warning',
+      code: 'fill-open-paths',
+      message: `Layer ${layer.id} has ${open} open path${open === 1 ? '' : 's'}, which fill cannot burn; ${open === 1 ? 'it is' : 'they are'} skipped`,
+      layer: layer.id,
+    })
+
+  const { intervalMm, angleDeg, bidirectional, overscanMm, crosshatch } = settings.fill
+  const sets: { angle: number; lines: ScanLine[] }[] = (crosshatch ? [angleDeg, angleDeg + 90] : [angleDeg]).map((angle) => ({
+    angle,
+    lines: scanLines(shapes, angle, intervalMm),
+  }))
+  if (!sets.some((st) => st.lines.length)) return null
+
+  const offset = sets.filter((st) => st.lines.length && offAxis(st.angle)).map((st) => fmt(st.angle))
+  if (bidirectional && machine.scanOffsetMm?.length && offset.length)
+    diagnostics.push({
+      severity: 'warning',
+      code: 'fill-scan-offset',
+      message: `Layer ${layer.id} scans at ${offset.join(' and ')} deg; the machine's scan offset (BURN-48) is corrected only on lines along X, so these lines are simulated without it`,
+      layer: layer.id,
+    })
+
+  const s = (settings.maxPowerPct / 100) * machine.sMax
+  const f = settings.speedMmPerMin
+  let end: [number, number] = [0, 0]
+  tp.setTag({ layer: index, shape: -1, subpath: -1, pass: -1 })
+  tp.comment(`Layer ${layer.id}`)
+  for (let pass = 0; pass < settings.passes; pass++) {
+    tp.setTag({ layer: index, shape: -1, subpath: -1, pass })
+    tp.comment(`Fill @ ${fmt(f)} mm/min, ${fmt(settings.maxPowerPct)}% power${settings.passes > 1 ? `, pass ${pass + 1} of ${settings.passes}` : ''}`)
+    sets.forEach(({ angle, lines }, k) => {
+      if (!lines.length) return
+      if (k > 0) {
+        tp.setTag({ layer: index, shape: -1, subpath: -1, pass })
+        tp.comment(`Crosshatch at ${fmt(angle)} deg`)
+      }
+      lines.forEach(({ c, spans }, i) => {
+        const forward = !bidirectional || i % 2 === 0
+        const pt = (a: number) => scanToBed(a, c, angle)
+        const lo = spans[0]!.a0 - overscanMm
+        const hi = spans[spans.length - 1]!.a1 + overscanMm
+        const order = forward ? spans : [...spans].reverse()
+        tp.setTag({ layer: index, shape: order[0]!.shape, subpath: -1, pass })
+        tp.rapid(...pt(forward ? lo : hi))
+        for (const span of order) {
+          tp.setTag({ layer: index, shape: span.shape, subpath: -1, pass })
+          const [from, to] = forward ? [span.a0, span.a1] : [span.a1, span.a0]
+          tp.cut(...pt(from), f, 0)
+          tp.cut(...pt(to), f, s)
+        }
+        end = pt(forward ? hi : lo)
+        tp.cut(...end, f, 0)
+      })
+    })
+  }
+  return end
+}
