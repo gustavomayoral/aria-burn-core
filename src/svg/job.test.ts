@@ -12,6 +12,7 @@ import {
   DEFAULT_PLACEMENT,
   anchorPoint,
   apply,
+  lineShapes,
   placementMatrix,
   readSvg,
   sourceAt,
@@ -183,6 +184,25 @@ describe('line mode', () => {
       ['duplicate-layer', 'C00'],
       ['fill-not-available', 'C01'],
     ])
+  })
+
+  it('line mode traces shapes stroked in the layer colour and unstroked ones, not a stroked shape there only by its default fill', () => {
+    // The red path has no fill="none", so SVG's default black fill puts it on C00 too.
+    const doc = svg(
+      'width="50mm" height="50mm" viewBox="0 0 50 50"',
+      '<path d="M5,5 H15" stroke="#ff0000"/><rect x="30" y="30" width="5" height="5" fill="#000000"/><path d="M5,40 H15" fill="none" stroke="#000000"/>',
+    )
+    const c00 = doc.layers.findIndex((l) => l.id === 'C00')
+    expect(doc.layers[c00]!.shapes).toEqual([0, 1, 2])
+    expect(lineShapes(doc, c00)).toEqual([1, 2])
+    expect(lineShapes(doc, doc.layers.findIndex((l) => l.color === '#ff0000'))).toEqual([0])
+    const r = svgJob(doc, layersWith(doc, () => ({ mode: 'line' })), DEFAULT_PLACEMENT, MACHINE)
+    const c00Shapes = new Set<number>()
+    for (const { m } of burns(r.job.moves)) {
+      const src = sourceAt(r.sourceMap, m.line)!
+      if (doc.layers[src.layer]!.id === 'C00') c00Shapes.add(src.shape)
+    }
+    expect([...c00Shapes].sort()).toEqual([1, 2])
   })
 
   it('inner closed shapes go before the shapes around them; open paths are reversed when their far end is nearer', () => {

@@ -6,7 +6,13 @@
 // M4 scaling and the burn views need nothing new. The G-code is internal: it
 // drives the simulator and is never offered as an export.
 //
-// Line mode follows each subpath. Within a layer, paths go greedy
+// Line mode follows each subpath of the shapes `lineShapes` gives: those
+// stroked in the layer's colour, and unstroked (fill-only) shapes, whose
+// outline is traced. A shape on the layer only through its fill while stroked
+// in another colour is not traced (BURN-53): SVG's default fill is black, so a
+// stroked path without fill="none" would otherwise also be traced on C00.
+// This matches LightBurn, which gives a shape its stroke colour's layer.
+// Within a layer, paths go greedy
 // nearest-start from where the head is: a closed path may start at any
 // vertex, an open path may be reversed, and a closed path waits until every
 // closed path inside it is done (inner shapes first, as LightBurn cuts them).
@@ -26,6 +32,21 @@ import { Toolpath } from '../calibration/toolpath.ts'
 import { apply, type Matrix } from './matrix.ts'
 import { placementMatrix, transformedBounds, type Placement } from './placement.ts'
 import type { SvgDocument } from './read.ts'
+
+/**
+ * The shapes a layer traces in line mode (indices into doc.shapes): those
+ * stroked in the layer's colour, and those with no stroke at all (their
+ * outline). A shape stroked in another colour and on this layer only through
+ * its fill (often SVG's default black fill) is left to its stroke's layer.
+ */
+export function lineShapes(doc: SvgDocument, layerIndex: number): number[] {
+  const layer = doc.layers[layerIndex]
+  if (!layer) return []
+  return layer.shapes.filter((si) => {
+    const s = doc.shapes[si]!
+    return s.stroke === null || s.stroke === layer.color
+  })
+}
 
 /** One layer to burn: a layer of the document by id, and its settings. The list order is the burn order. */
 export interface SvgJobLayer {
@@ -336,7 +357,7 @@ export function svgJob(
   for (const { index, settings } of plan) {
     const layer = doc.layers[index]!
     const items: Item[] = []
-    for (const si of layer.shapes) {
+    for (const si of lineShapes(doc, index)) {
       const shape = doc.shapes[si]!
       shape.subpaths.forEach((sp, j) => {
         const src = sp.points
